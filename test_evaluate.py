@@ -42,23 +42,24 @@ class EvaluateTest(unittest.TestCase):
 
 class ResearchTest(unittest.TestCase):
     def records(self, n=100):
-        rows = []
-        for i in range(n):
-            rows.append({"captured_at_ms": i * HOUR, "assets": [{
-                "coin": "BTC", "mark": 100 - i, "funding_1h_pct": .02}]})
-        return rows
+        return [{"captured_at_ms": i * HOUR, "assets": [{
+            "coin": "BTC", "mark": 200 - i, "funding_1h_pct": .02}]}
+                for i in range(n)]
 
     def test_split_is_chronological(self):
         train, test, cut = split(self.records(10), .7)
         self.assertTrue(max(r["captured_at_ms"] for r in train) <= cut)
         self.assertTrue(min(r["captured_at_ms"] for r in test) > cut)
 
-    def test_study_selects_and_tests_without_leakage(self):
-        result = study(self.records(), horizons=(1,), thresholds=(1,),
-                       costs=(3,), min_trades=10)
+    def test_study_exports_selected_oos_trades_and_portfolio(self):
+        result, trades = study(self.records(), horizons=(1,), thresholds=(1,),
+                               costs=(3,), min_trades=10, max_positions=2)
         self.assertEqual(result["selected"]["horizon_hours"], 1)
         self.assertEqual(result["verdict"], "PROMISING")
-        self.assertGreater(result["out_of_sample"]["mean_net_return_pct"], 0)
+        self.assertEqual(result["out_of_sample"]["trades"], len(trades))
+        self.assertEqual(result["portfolio"]["accepted_trades"], len(trades))
+        self.assertGreater(result["portfolio"]["return_pct"], 0)
+        self.assertNotIn("ledger", result["portfolio"])
 
 
 if __name__ == "__main__":
