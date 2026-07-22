@@ -29,12 +29,35 @@ jobs:
           python-version: "3.12"
       - run: python -m unittest -v test_crossvenue_snapshot.py
       - run: python -m py_compile crossvenue_snapshot.py test_crossvenue_snapshot.py
+      - name: Diagnose Bybit endpoints
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json, urllib.error
+          from crossvenue_snapshot import get_json, post_hl
+          checks={}
+          calls={
+            "hl_predicted":lambda:post_hl({"type":"predictedFundings"}),
+            "bybit_ticker":lambda:get_json("https://api.bybit.com/v5/market/tickers",{"category":"linear","symbol":"BTCUSDT"}),
+            "bybit_book":lambda:get_json("https://api.bybit.com/v5/market/orderbook",{"category":"linear","symbol":"BTCUSDT","limit":1}),
+          }
+          for name,call in calls.items():
+            try:
+              v=call(); checks[name]={"ok":True,"sample":v[:1] if isinstance(v,list) else v}
+            except urllib.error.HTTPError as e:
+              checks[name]={"ok":False,"http_status":e.code,"body":e.read().decode(errors="replace")[:500]}
+            except Exception as e:
+              checks[name]={"ok":False,"error":repr(e)}
+          open("reports/probe_diagnostic.json","w").write(json.dumps(checks,indent=2,default=str)+"\n")
+          print(json.dumps(checks,indent=2,default=str))
+          PY
       - name: Collect one live BTC/ETH snapshot
+        continue-on-error: true
         run: python crossvenue_snapshot.py --coins BTC,ETH --out reports/crossvenue_probe.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: crossvenue-probe-${{ github.run_id }}
-          path: reports/crossvenue_probe.jsonl
+          path: reports/
           retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error
