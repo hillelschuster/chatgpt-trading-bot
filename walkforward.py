@@ -38,7 +38,7 @@ def by_coin(trades):
 
 
 def validate(records, horizons=(1, 4, 8, 24), thresholds=(.25, .5, 1, 2, 5),
-             selection_cost=6, stress_costs=(3, 6, 9, 12), min_trades=30,
+             selection_cost=12, stress_costs=(9, 12, 15, 18), min_trades=30,
              folds=4, min_train_fraction=.4, capital=10_000,
              max_positions=3, risk_fraction=1.0, max_trade_notional=5_000,
              max_coin_positions=1):
@@ -74,8 +74,8 @@ def validate(records, horizons=(1, 4, 8, 24), thresholds=(.25, .5, 1, 2, 5),
                and robust_cost else "REJECT_OR_REWORK")
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "records": len(records), "folds": fold_rows,
-        "aggregate_oos": aggregate, "by_coin": by_coin(all_trades),
+        "records": len(records), "selection_cost_bps": selection_cost,
+        "folds": fold_rows, "aggregate_oos": aggregate, "by_coin": by_coin(all_trades),
         "portfolio": {k: v for k, v in portfolio.items() if k != "ledger"},
         "cost_sensitivity_bps": sensitivity,
         "parameter_stability": {"most_common": stable_choice[0],
@@ -102,10 +102,12 @@ def main():
     p.add_argument("--ledger-out", default="reports/walkforward_ledger.jsonl")
     p.add_argument("--folds", type=int, default=4)
     p.add_argument("--min-trades", type=int, default=30)
+    p.add_argument("--roundtrip-bps", type=float, default=12)
     p.add_argument("--capital", type=float, default=10_000)
     a = p.parse_args()
     result, trades, ledger = validate(load(a.path), folds=a.folds,
-                                      min_trades=a.min_trades, capital=a.capital)
+                                      min_trades=a.min_trades, capital=a.capital,
+                                      selection_cost=a.roundtrip_bps)
     write(a.out, result); write(a.trades_out, trades, True); write(a.ledger_out, ledger, True)
     print(json.dumps({"out": a.out, "verdict": result["verdict"],
                       "trades": result["aggregate_oos"]["trades"],
