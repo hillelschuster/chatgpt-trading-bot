@@ -4,28 +4,36 @@ Compact Hyperliquid perpetual research code. **No deployable edge or live bot ex
 
 ## Current verdict
 
-The earlier funding-fade result is invalidated: historical candles were keyed by their opening timestamp but valued with the closing price, leaking one hour of future information. The only completed live report also rejected the strategy out of sample. Cross-sectional momentum/reversal has not yet produced a trustworthy live report.
+Corrected fixed-universe 180-day run `29949365810` used eleven assets with complete history (`AAVE,BTC,ETH,HYPE,LIT,NEAR,ONDO,PUMP,SOL,XRP,ZEC`), 4,320 hourly records, and 100% panel coverage.
 
-The corrected pipeline now:
+- Funding fade: the single split had a small positive portfolio result, but the selected training rule was negative and untouched confidence remained negative. Anchored walk-forward mean was `-0.1452%`, LCB95 `-0.3107%`, and finite-capital return `-17.74%`.
+- Cross-sectional momentum/reversal: untouched mean was `-0.1315%`, LCB95 `-0.1791%`, and finite-capital return `-81.99%`; it remained negative from 9 to 18 bps costs.
+
+**Both strategies are retired.** Do not retune them on this sample or build execution around them.
+
+The corrected pipeline:
 
 - uses the hourly candle **open** at timestamp `t`, not the future close;
-- fixes round-trip cost at a predeclared conservative 12 bps instead of optimizing the cost assumption;
+- fixes round-trip cost at a predeclared 12 bps instead of optimizing the cost assumption;
 - excludes ambiguous entry/exit funding-boundary payments;
 - includes held funding in cross-sectional perp returns;
-- ranks from information available at entry, uses non-overlapping pairs, and measures pair returns rather than treating two legs as independent trades;
-- rate-limits historical downloads;
+- uses past-only selection, non-overlapping pairs, and finite-capital exit-time accounting;
+- requires all eleven fixed assets at every retained hour;
 - calls portfolio drawdown `realized` because intratrade mark-to-market/liquidation risk is not modeled.
 
 ```bash
 python -m unittest -v
-python bootstrap_history.py --auto-coins 12 --min-day-volume 10000000 \
-  --min-assets 6 --days 180 --request-delay 2.6 \
+python bootstrap_history.py \
+  --coins AAVE,BTC,ETH,HYPE,LIT,NEAR,ONDO,PUMP,SOL,XRP,ZEC \
+  --min-assets 11 --days 180 --request-delay 2.6 \
   --out data/history.jsonl --meta-out reports/universe.json
 python research.py data/history.jsonl --roundtrip-bps 12
 python walkforward.py data/history.jsonl --roundtrip-bps 12
-python xsection.py data/history.jsonl --roundtrip-bps 12
+python xsection.py data/history.jsonl --roundtrip-bps 12 --min-assets 11
 ```
 
-Fast tests run on code pushes. The expensive real-data study runs manually or once daily and uploads its full dataset and reports as one workflow artifact; it does not write research outputs back to `main` or cancel itself during multi-commit development.
+Fast tests run on code pushes. The expensive study runs manually or weekly on Monday and uploads one immutable artifact; it does not write generated results to `main` or cancel an active run.
 
-Current-universe selection still creates survivorship bias. Candle-open fills and fixed slippage remain approximations. No execution adapter, paper loop, order-book fill model, liquidation model, or live trading is implemented or authorized.
+A strategy may proceed only when aggregate walk-forward LCB95 is positive, at least three of four OOS folds have positive means, performance remains positive at 18 bps, the finite-capital portfolio is positive, and no single asset supplies over half of profit.
+
+The fixed list still reflects assets known to survive the full sampled period, candle-open fills remain approximate, and intratrade liquidation is not modeled. No execution adapter, paper loop, or live trading is implemented or authorized.
