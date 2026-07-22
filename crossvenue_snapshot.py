@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Collect one pre-entry Hyperliquid/Bybit funding-basis snapshot from public APIs."""
+"""Collect one pre-entry Hyperliquid/OKX funding-basis snapshot from public APIs."""
 import argparse, json, time, urllib.parse, urllib.request
 from pathlib import Path
 
 HL_INFO = "https://api.hyperliquid.xyz/info"
-BYBIT_API = "https://api.bybit.com"
-SCHEMA_VERSION = 2
+OKX_API = "https://www.okx.com"
+SCHEMA_VERSION = 3
 
 
 def get_json(url, params=None, timeout=20):
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "crossvenue-research/2"})
+    req = urllib.request.Request(url, headers={"User-Agent": "crossvenue-research/3"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.load(response)
 
 
 def post_hl(payload, timeout=20):
     req = urllib.request.Request(HL_INFO, json.dumps(payload).encode(),
-                                 {"Content-Type": "application/json", "User-Agent": "crossvenue-research/2"})
+                                 {"Content-Type": "application/json", "User-Agent": "crossvenue-research/3"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.load(response)
 
@@ -65,14 +65,14 @@ def hl_book(book):
             "book_time_ms": book.get("time")}
 
 
-def bybit_result(response):
-    if response.get("retCode") != 0:
-        raise ValueError(f"Bybit retCode={response.get('retCode')}: {response.get('retMsg')}")
-    return response.get("result") or {}
+def okx_data(response):
+    if str(response.get("code")) != "0":
+        raise ValueError(f"OKX code={response.get('code')}: {response.get('msg')}")
+    return response.get("data") or []
 
 
-def bybit_symbol(coin):
-    return f"{coin.upper()}USDT"
+def okx_inst_id(coin):
+    return f"{coin.upper()}-USDT-SWAP"
 
 
 def collect_coin(coin, now_ms=None, hl_post=post_hl, http_get=get_json):
@@ -80,38 +80,37 @@ def collect_coin(coin, now_ms=None, hl_post=post_hl, http_get=get_json):
     predicted = hl_predicted_map(hl_post({"type": "predictedFundings"}))
     contexts = hl_context_map(hl_post({"type": "metaAndAssetCtxs"}))
     hbook = hl_book(hl_post({"type": "l2Book", "coin": coin}))
-    rates = predicted.get(coin, {})
-    hl_rate = rates.get("HlPerp") or {}
-    bybit_prediction = rates.get("BybitPerp") or {}
+    hl_rate = predicted.get(coin, {}).get("HlPerp") or {}
 
-    symbol = bybit_symbol(coin)
-    ticker_result = bybit_result(http_get(f"{BYBIT_API}/v5/market/tickers",
-                                          {"category": "linear", "symbol": symbol}))
-    ticker_rows = ticker_result.get("list") or []
-    if len(ticker_rows) != 1:
-        raise ValueError(f"Bybit ticker missing for {symbol}")
-    ticker = ticker_rows[0]
-    orderbook = bybit_result(http_get(f"{BYBIT_API}/v5/market/orderbook",
-                                      {"category": "linear", "symbol": symbol, "limit": 1}))
+    inst_id = okx_inst_id(coin)
+    ticker_rows = okx_data(http_get(f"{OKX_API}/api/v5/market/ticker", {"instId": inst_id}))
+    book_rows = okx_data(http_get(f"{OKX_API}/api/v5/market/books", {"instId": inst_id, "sz": 1}))
+    funding_rows = okx_data(http_get(f"{OKX_API}/api/v5/public/funding-rate", {"instId": inst_id}))
+    if len(ticker_rows) != 1 or len(book_rows) != 1 or len(funding_rows) != 1:
+        raise ValueError(f"OKX incomplete response for {inst_id}")
+    ticker, book, funding = ticker_rows[0], book_rows[0], funding_rows[0]
 
     return {
         "schema_version": SCHEMA_VERSION, "captured_at_ms": now_ms, "coin": coin,
-        "symbol_map": {"hyperliquid": coin, "bybit_linear": symbol},
+        "symbol_map": {"hyperliquid": coin, "okx_swap": inst_id},
         "hyperliquid": {**contexts.get(coin, {}), **hbook,
             "predicted_funding_rate": hl_rate.get("funding_rate"),
             "next_funding_time_ms": hl_rate.get("next_funding_time_ms"),
             "funding_interval_hours": hl_rate.get("funding_interval_hours")},
-        "bybit_linear": {
-            "mark_price": _float(ticker.get("markPrice")), "index_price": _float(ticker.get("indexPrice")),
-            "current_funding_rate": _float(ticker.get("fundingRate")),
-            "predicted_funding_rate_from_hl": bybit_prediction.get("funding_rate"),
-            "next_funding_time_ms": int(ticker["nextFundingTime"]) if ticker.get("nextFundingTime") else None,
-            "funding_interval_hours_from_hl": bybit_prediction.get("funding_interval_hours"),
-            "bid": _float(orderbook.get("b", [[None]])[0][0]) if orderbook.get("b") else None,
-            "ask": _float(orderbook.get("a", [[None]])[0][0]) if orderbook.get("a") else None,
-            "book_time_ms": orderbook.get("cts") or orderbook.get("ts"),
+        "okx_swap": {
+            "last_price": _float(ticker.get("last")),
+            "bid": _float(book.get("bids", [[None]])[0][0]) if book.get("bids") else None,
+            "ask": _float(book.get("asks", [[None]])[0][0]) if book.get("asks") else None,
+            "book_time_ms": int(book["ts"]) if book.get("ts") else None,
+            "predicted_funding_rate": _float(funding.get("fundingRate")),
+            "funding_time_ms": int(funding["fundingTime"]) if funding.get("fundingTime") else None,
+            "next_funding_time_ms": int(funding["nextFundingTime"]) if funding.get("nextFundingTime") else None,
+            "settled_funding_rate": _float(funding.get("settFundingRate")),
+            "premium": _float(funding.get("premium")),
+            "funding_event_time_ms": int(funding["ts"]) if funding.get("ts") else None,
         },
         "semantics": {"decision_input_only": True, "no_realized_future_funding_used": True,
+                      "okx_funding_rate_method": funding.get("method"),
                       "hyperliquid_prediction_source": "predictedFundings"},
     }
 
@@ -121,15 +120,18 @@ def validate(snapshot, max_skew_ms=60_000):
     if snapshot.get("schema_version") != SCHEMA_VERSION:
         errors.append("schema_version")
     now = int(snapshot.get("captured_at_ms") or 0)
-    for venue in ("hyperliquid", "bybit_linear"):
+    for venue in ("hyperliquid", "okx_swap"):
         row = snapshot.get(venue) or {}
         bid, ask, stamp = row.get("bid"), row.get("ask"), row.get("book_time_ms")
         if bid is None or ask is None or bid <= 0 or ask <= 0 or bid >= ask:
             errors.append(f"{venue}.book")
         if stamp is None or abs(now - int(stamp)) > max_skew_ms:
             errors.append(f"{venue}.book_time_skew")
-        if row.get("next_funding_time_ms") is None:
-            errors.append(f"{venue}.next_funding_time")
+    if snapshot.get("hyperliquid", {}).get("next_funding_time_ms") is None:
+        errors.append("hyperliquid.next_funding_time")
+    okx = snapshot.get("okx_swap", {})
+    if okx.get("funding_time_ms") is None or okx.get("predicted_funding_rate") is None:
+        errors.append("okx_swap.funding")
     return errors
 
 
@@ -150,6 +152,5 @@ def main():
     if failures: raise SystemExit(json.dumps({"invalid": failures}, sort_keys=True))
     append_jsonl(a.out, rows)
     print(json.dumps({"out": a.out, "coins": [r["coin"] for r in rows], "rows": len(rows)}, indent=2))
-
 
 if __name__ == "__main__": main()
