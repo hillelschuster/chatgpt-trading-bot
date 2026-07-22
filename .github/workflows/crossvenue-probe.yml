@@ -29,7 +29,7 @@ jobs:
           python-version: "3.12"
       - run: python -m unittest -v test_crossvenue_snapshot.py
       - run: python -m py_compile crossvenue_snapshot.py test_crossvenue_snapshot.py
-      - name: Diagnose Bybit endpoints
+      - name: Diagnose venue endpoints
         run: |
           mkdir -p reports
           python - <<'PY'
@@ -39,7 +39,9 @@ jobs:
           calls={
             "hl_predicted":lambda:post_hl({"type":"predictedFundings"}),
             "bybit_ticker":lambda:get_json("https://api.bybit.com/v5/market/tickers",{"category":"linear","symbol":"BTCUSDT"}),
-            "bybit_book":lambda:get_json("https://api.bybit.com/v5/market/orderbook",{"category":"linear","symbol":"BTCUSDT","limit":1}),
+            "okx_ticker":lambda:get_json("https://www.okx.com/api/v5/market/ticker",{"instId":"BTC-USDT-SWAP"}),
+            "okx_book":lambda:get_json("https://www.okx.com/api/v5/market/books",{"instId":"BTC-USDT-SWAP","sz":1}),
+            "okx_funding":lambda:get_json("https://www.okx.com/api/v5/public/funding-rate",{"instId":"BTC-USDT-SWAP"}),
           }
           for name,call in calls.items():
             try:
@@ -51,9 +53,6 @@ jobs:
           open("reports/probe_diagnostic.json","w").write(json.dumps(checks,indent=2,default=str)+"\n")
           print(json.dumps(checks,indent=2,default=str))
           PY
-      - name: Collect one live BTC/ETH snapshot
-        continue-on-error: true
-        run: python crossvenue_snapshot.py --coins BTC,ETH --out reports/crossvenue_probe.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
