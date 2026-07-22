@@ -30,7 +30,7 @@ def run_grid(records, horizons, thresholds, costs, min_trades=30):
 
 
 def study(records, horizons=(1, 4, 8, 24), thresholds=(.25, .5, 1, 2, 5),
-          costs=(3, 6, 9), min_trades=30, train_fraction=.7,
+          costs=(12,), min_trades=30, train_fraction=.7,
           capital=10_000, max_positions=3, risk_fraction=1.0,
           max_trade_notional=5_000, max_coin_positions=1):
     train, test, cut = split(records, train_fraction)
@@ -40,6 +40,7 @@ def study(records, horizons=(1, 4, 8, 24), thresholds=(.25, .5, 1, 2, 5),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "records": len(records), "train_records": len(train), "test_records": len(test),
         "split_at_ms": cut, "selection_rule": "highest train 95% lower confidence bound",
+        "cost_policy": "fixed before selection; never optimized as a strategy parameter",
         "min_train_trades": min_trades, "selected": selected,
         "out_of_sample": None, "portfolio": None, "verdict": "INSUFFICIENT_DATA",
         "top_train": ranked[:10],
@@ -75,6 +76,7 @@ def main():
     p.add_argument("--trades-out", default="reports/oos_trades.jsonl")
     p.add_argument("--ledger-out", default="reports/portfolio_ledger.jsonl")
     p.add_argument("--min-trades", type=int, default=30)
+    p.add_argument("--roundtrip-bps", type=float, default=12)
     p.add_argument("--train-fraction", type=float, default=.7)
     p.add_argument("--capital", type=float, default=10_000)
     p.add_argument("--max-positions", type=int, default=3)
@@ -82,7 +84,7 @@ def main():
     p.add_argument("--max-trade-notional", type=float, default=5_000)
     p.add_argument("--max-coin-positions", type=int, default=1)
     a = p.parse_args()
-    result, trades = study(load(a.path), min_trades=a.min_trades,
+    result, trades = study(load(a.path), costs=(a.roundtrip_bps,), min_trades=a.min_trades,
                            train_fraction=a.train_fraction, capital=a.capital,
                            max_positions=a.max_positions, risk_fraction=a.risk_fraction,
                            max_trade_notional=a.max_trade_notional,
