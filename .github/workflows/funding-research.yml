@@ -26,10 +26,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest -v
-      - name: Build broad liquid-perp history panel
+      - name: Build fixed full-history perp panel
         run: >-
-          python bootstrap_history.py --auto-coins 12 --min-day-volume 10000000
-          --min-assets 6 --days 180 --request-delay 2.6
+          python bootstrap_history.py
+          --coins AAVE,BTC,ETH,HYPE,LIT,NEAR,ONDO,PUMP,SOL,XRP,ZEC
+          --min-assets 11 --days 180 --request-delay 2.6
           --out data/history.jsonl --meta-out reports/universe.json
       - name: Evaluate funding fade
         run: >-
@@ -49,7 +50,7 @@ jobs:
           python xsection.py data/history.jsonl --roundtrip-bps 12
           --out reports/xsection.json --trades-out reports/xsection_trades.jsonl
           --ledger-out reports/xsection_ledger.jsonl --min-trades 40
-          --min-assets 6 --capital 10000
+          --min-assets 11 --capital 10000
       - uses: actions/upload-artifact@v4
         if: always()
         with:
