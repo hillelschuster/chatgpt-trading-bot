@@ -1,48 +1,47 @@
 import json, tempfile, unittest
 from pathlib import Path
-from bootstrap_history import HOUR, candles, paged_funding, panel, write_jsonl
+from bootstrap_history import HOUR, candles, liquid_universe, paged_funding, panel, quality, write_jsonl
 
 
 class HistoryTest(unittest.TestCase):
+    def test_universe_ranks_liquid_active_assets(self):
+        def fetch(_):
+            return ({"universe": [{"name": "A"}, {"name": "B"}, {"name": "DEAD", "isDelisted": True}]},
+                    [{"dayNtlVlm": "20", "openInterest": "3", "markPx": "2"},
+                     {"dayNtlVlm": "50", "openInterest": "1", "markPx": "4"},
+                     {"dayNtlVlm": "100", "openInterest": "9", "markPx": "1"}])
+        got = liquid_universe(2, 10, fetch)
+        self.assertEqual(["B", "A"], [x["coin"] for x in got])
+        self.assertEqual(6, got[1]["open_interest_usd"])
+
     def test_funding_paginates_without_duplicates(self):
         calls = []
-
         def fetch(payload):
             calls.append(payload["startTime"])
-            if len(calls) == 1:
-                return [{"time": i, "fundingRate": "0.0001"} for i in range(500)]
-            return [{"time": 500, "fundingRate": "-0.0002"}]
-
+            return ([{"time": i, "fundingRate": "0.0001"} for i in range(500)]
+                    if len(calls) == 1 else [{"time": 500, "fundingRate": "-0.0002"}])
         rows = paged_funding("BTC", 0, 1000, fetch)
-        self.assertEqual(501, len(rows))
-        self.assertEqual([0, 500], calls)
+        self.assertEqual(501, len(rows)); self.assertEqual([0, 500], calls)
 
     def test_candles_chunks_at_api_limit(self):
         calls = []
-
         def fetch(payload):
-            req = payload["req"]
-            calls.append((req["startTime"], req["endTime"]))
+            req = payload["req"]; calls.append((req["startTime"], req["endTime"]))
             return [{"t": req["startTime"], "c": "100"}]
+        rows = candles("BTC", 0, 5_001 * HOUR, fetch)
+        self.assertEqual(2, len(rows)); self.assertEqual((0, 4_999 * HOUR), calls[0])
 
-        end = 5_001 * HOUR
-        rows = candles("BTC", 0, end, fetch)
-        self.assertEqual(2, len(rows))
-        self.assertEqual((0, 4_999 * HOUR), calls[0])
-
-    def test_panel_joins_funding_to_hourly_close_and_writes_jsonl(self):
+    def test_panel_filters_sparse_hours_and_reports_quality(self):
         def fetch(payload):
             coin = payload.get("coin") or payload["req"]["coin"]
             if payload["type"] == "fundingHistory":
-                return [{"time": HOUR + 123, "fundingRate": "0.0002"}]
-            return [{"t": HOUR, "c": "101.5", "s": coin}]
-
-        records = panel(["BTC", "ETH"], 0, 2 * HOUR, fetch)
+                return ([] if coin == "C" else [{"time": HOUR + 123, "fundingRate": "0.0002"}])
+            return [{"t": HOUR, "c": "101.5"}]
+        records = panel(["A", "B", "C"], 0, 2 * HOUR, fetch, min_assets=2)
         self.assertEqual(1, len(records))
-        self.assertEqual(["BTC", "ETH"], [a["coin"] for a in records[0]["assets"]])
-        self.assertAlmostEqual(.02, records[0]["assets"][0]["funding_1h_pct"])
+        self.assertEqual(66.66666666666667, quality(records, ["A", "B", "C"])["coverage_pct"])
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "nested" / "history.jsonl"
+            path = Path(directory) / "history.jsonl"
             self.assertEqual(1, write_jsonl(path, records))
             self.assertEqual(records[0], json.loads(path.read_text().strip()))
 
