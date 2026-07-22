@@ -13,7 +13,7 @@ def load(path):
     return records
 
 
-def observations(records, horizon_hours=1, min_funding_bps=0.5, roundtrip_bps=9.0,
+def observations(records, horizon_hours=1, min_funding_bps=0.5, roundtrip_bps=12.0,
                  tolerance_minutes=20):
     by_coin = defaultdict(list)
     for record in records:
@@ -38,8 +38,8 @@ def observations(records, horizon_hours=1, min_funding_bps=0.5, roundtrip_bps=9.
                 continue
             side = -1 if signal_funding_pct > 0 else 1
             raw_return = future[1] / mark - 1
-            # The signal is known at ts, so the funding just settled at ts cannot be earned.
-            held_rates = [rate / 100 for t, _, rate in points if ts < t <= future[0]]
+            # Enter after funding at `ts`; exit at `future[0]`. Exclude both ambiguous boundary prints.
+            held_rates = [rate / 100 for t, _, rate in points if ts < t < future[0]]
             funding_return = sum(-side * rate for rate in held_rates)
             net = side * raw_return + funding_return - roundtrip_bps / 10_000
             out.append({
@@ -86,7 +86,7 @@ def main():
     p.add_argument("path", nargs="?", default="data/snapshots.jsonl")
     p.add_argument("--horizon", type=int, choices=(1, 4, 8, 24), default=1)
     p.add_argument("--min-funding-bps", type=float, default=.5)
-    p.add_argument("--roundtrip-bps", type=float, default=9)
+    p.add_argument("--roundtrip-bps", type=float, default=12)
     p.add_argument("--trades-out")
     args = p.parse_args()
     rows = observations(load(args.path), args.horizon, args.min_funding_bps, args.roundtrip_bps)
