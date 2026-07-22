@@ -1,0 +1,3 @@
+# Progress
+
+- 2026-07-22T07:40:00Z | Thesis: liquid hourly funding dislocations are measurable and may become tradable when combined with subsequent price behavior and realistic costs. | Changed: initialized the repository and added a zero-dependency Hyperliquid perp scout ranking funding extremes after open-interest and volume filters. | Evidence: official Hyperliquid docs expose `metaAndAssetCtxs`, hourly funding, public liquidity data, and base perp fees of 0.045% taker / 0.015% maker. | Verification: fixture-based unit test passed locally; live API execution was not available in the coding runtime. | Next: persist hourly snapshots and test whether extreme funding predicts cost-adjusted forward returns.
