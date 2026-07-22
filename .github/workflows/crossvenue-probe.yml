@@ -1,0 +1,40 @@
+name: crossvenue-probe
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".crossvenue-trigger"
+      - "crossvenue_snapshot.py"
+      - "test_crossvenue_snapshot.py"
+      - "CROSS_VENUE_EXPERIMENT.md"
+      - ".github/workflows/crossvenue-probe.yml"
+
+concurrency:
+  group: crossvenue-probe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m unittest -v test_crossvenue_snapshot.py
+      - run: python -m py_compile crossvenue_snapshot.py test_crossvenue_snapshot.py
+      - name: Collect one live BTC/ETH snapshot
+        run: python crossvenue_snapshot.py --coins BTC,ETH --out reports/crossvenue_probe.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crossvenue-probe-${{ github.run_id }}
+          path: reports/crossvenue_probe.jsonl
+          retention-days: 14
+          if-no-files-found: warn
