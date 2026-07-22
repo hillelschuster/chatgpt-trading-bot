@@ -1,39 +1,31 @@
 # Crypto Trading Bot
 
-Compact research-to-execution bot, initially targeting Hyperliquid perpetuals.
+Compact Hyperliquid perpetual research code. **No deployable edge or live bot exists yet.**
 
-## Current v0 thesis
+## Current verdict
 
-Funding fade is rejected by the first live train/test evidence. The active benchmark now tests cost-aware cross-sectional momentum and reversal across a current liquid-perpetual universe rather than only BTC/ETH/SOL.
+The earlier funding-fade result is invalidated: historical candles were keyed by their opening timestamp but valued with the closing price, leaking one hour of future information. The only completed live report also rejected the strategy out of sample. Cross-sectional momentum/reversal has not yet produced a trustworthy live report.
+
+The corrected pipeline now:
+
+- uses the hourly candle **open** at timestamp `t`, not the future close;
+- fixes round-trip cost at a predeclared conservative 12 bps instead of optimizing the cost assumption;
+- excludes ambiguous entry/exit funding-boundary payments;
+- includes held funding in cross-sectional perp returns;
+- ranks from information available at entry, uses non-overlapping pairs, and measures pair returns rather than treating two legs as independent trades;
+- rate-limits historical downloads;
+- calls portfolio drawdown `realized` because intratrade mark-to-market/liquidation risk is not modeled.
 
 ```bash
-python bootstrap_history.py --auto-coins 12 --min-day-volume 10000000 \
-  --min-assets 6 --days 180 --out data/history.jsonl --meta-out reports/universe.json
-python research.py data/history.jsonl \
-  --out reports/funding_fade.json \
-  --trades-out reports/oos_trades.jsonl \
-  --ledger-out reports/portfolio_ledger.jsonl \
-  --min-trades 30 --capital 10000 --max-positions 3 --max-trade-notional 5000
-python walkforward.py data/history.jsonl \
-  --out reports/walkforward.json \
-  --trades-out reports/walkforward_trades.jsonl \
-  --ledger-out reports/walkforward_ledger.jsonl \
-  --folds 4 --min-trades 30 --capital 10000
-python xsection.py data/history.jsonl \
-  --out reports/xsection.json \
-  --trades-out reports/xsection_trades.jsonl \
-  --ledger-out reports/xsection_ledger.jsonl \
-  --min-trades 40 --min-assets 6 --capital 10000
-python scout.py --out data/snapshots.jsonl
 python -m unittest -v
+python bootstrap_history.py --auto-coins 12 --min-day-volume 10000000 \
+  --min-assets 6 --days 180 --request-delay 2.6 \
+  --out data/history.jsonl --meta-out reports/universe.json
+python research.py data/history.jsonl --roundtrip-bps 12
+python walkforward.py data/history.jsonl --roundtrip-bps 12
+python xsection.py data/history.jsonl --roundtrip-bps 12
 ```
 
-`bootstrap_history.py` selects the most liquid active perps from official `metaAndAssetCtxs`, records the selection and current liquidity in `reports/universe.json`, downloads official funding/candle history with retries, filters sparse hours, and reports panel coverage. Pass `--coins` to force a fixed universe.
+Fast tests run on code pushes. The expensive real-data study runs manually or once daily and uploads its full dataset and reports as one workflow artifact; it does not write research outputs back to `main` or cancel itself during multi-commit development.
 
-`research.py` performs a single train/test funding-fade selection. `walkforward.py` is the stricter repeated past-only gate. `xsection.py` benchmarks 1/4/8/24-hour momentum and reversal only when at least six assets share the entry, lookback, and exit timestamps; it reports actual breadth, charges 3–12 bps round-trip costs, selects only on training data, exports untouched trades, and simulates two-sided finite-capital deployment.
-
-The portfolio simulator settles P&L only at exit, sizes from then-available equity, rejects excess overlap, caps notional, and reports utilization and drawdown. The automated workflow tests the repository, downloads 180 days for twelve currently liquid perps, runs all validation paths, and commits compact reports, raw untouched trades, accepted ledgers, and universe metadata.
-
-Current-universe selection introduces survivorship bias, so a positive result is exploratory rather than deployable evidence. The next validation must use historical universe membership or repeated archived selections.
-
-No live trading is implemented or authorized.
+Current-universe selection still creates survivorship bias. Candle-open fills and fixed slippage remain approximations. No execution adapter, paper loop, order-book fill model, liquidation model, or live trading is implemented or authorized.
