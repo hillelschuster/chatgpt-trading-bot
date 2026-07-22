@@ -1,22 +1,27 @@
 #!/usr/bin/env python3
 """Bootstrap a broad Hyperliquid hourly panel from official public endpoints."""
-import argparse, json, time, urllib.request
+import argparse, json, time, urllib.error, urllib.request
 from pathlib import Path
 
 URL = "https://api.hyperliquid.xyz/info"
 HOUR = 3_600_000
 
 
-def post(payload, attempts=3):
+def post(payload, attempts=6):
     req = urllib.request.Request(URL, json.dumps(payload).encode(), {"Content-Type": "application/json"})
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 return json.load(response)
+        except urllib.error.HTTPError as error:
+            if attempt + 1 == attempts:
+                raise
+            retry_after = float(error.headers.get("Retry-After") or 0)
+            time.sleep(max(retry_after, min(30, 2 ** attempt)))
         except Exception:
             if attempt + 1 == attempts:
                 raise
-            time.sleep(2 ** attempt)
+            time.sleep(min(30, 2 ** attempt))
 
 
 def liquid_universe(limit=12, min_day_volume=10_000_000, fetch=post):
@@ -35,7 +40,7 @@ def liquid_universe(limit=12, min_day_volume=10_000_000, fetch=post):
     return rows[:limit]
 
 
-def paged_funding(coin, start_ms, end_ms, fetch=post):
+def paged_funding(coin, start_ms, end_ms, fetch=post, request_delay=0):
     rows, cursor = [], start_ms
     while cursor <= end_ms:
         page = fetch({"type": "fundingHistory", "coin": coin, "startTime": cursor, "endTime": end_ms})
@@ -47,10 +52,12 @@ def paged_funding(coin, start_ms, end_ms, fetch=post):
         if nxt <= cursor:
             break
         cursor = nxt
+        if request_delay:
+            time.sleep(request_delay)
     return {int(r["time"]): float(r["fundingRate"]) for r in rows}
 
 
-def candles(coin, start_ms, end_ms, fetch=post):
+def candles(coin, start_ms, end_ms, fetch=post, request_delay=0):
     out, cursor = {}, start_ms
     while cursor <= end_ms:
         page_end = min(end_ms, cursor + 4_999 * HOUR)
@@ -59,18 +66,21 @@ def candles(coin, start_ms, end_ms, fetch=post):
         for row in page:
             ts = int(row["t"])
             if start_ms <= ts <= end_ms:
-                out[ts] = float(row["c"])
+                # `t` is candle open time; the open is observable at `t`. Using `c` here leaks the next hour.
+                out[ts] = float(row["o"])
         if page_end == end_ms:
             break
         cursor = page_end + HOUR
+        if request_delay:
+            time.sleep(request_delay)
     return out
 
 
-def panel(coins, start_ms, end_ms, fetch=post, min_assets=3):
+def panel(coins, start_ms, end_ms, fetch=post, min_assets=3, request_delay=0):
     by_time = {}
     for coin in coins:
-        funding = paged_funding(coin, start_ms, end_ms, fetch)
-        prices = candles(coin, start_ms, end_ms, fetch)
+        funding = paged_funding(coin, start_ms, end_ms, fetch, request_delay)
+        prices = candles(coin, start_ms, end_ms, fetch, request_delay)
         for ts, rate in funding.items():
             hour = ts - ts % HOUR
             mark = prices.get(hour)
@@ -109,6 +119,8 @@ def main():
     p.add_argument("--min-day-volume", type=float, default=10_000_000)
     p.add_argument("--min-assets", type=int, default=6)
     p.add_argument("--days", type=int, default=180)
+    p.add_argument("--request-delay", type=float, default=2.6,
+                   help="seconds between paginated requests; avoids public API rate-limit bursts")
     p.add_argument("--out", default="data/history.jsonl")
     p.add_argument("--meta-out", default="reports/universe.json")
     args = p.parse_args()
@@ -119,11 +131,12 @@ def main():
         raise SystemExit(f"only {len(coins)} eligible assets; need {args.min_assets}")
     end = int(time.time() * 1000) // HOUR * HOUR
     start = end - args.days * 24 * HOUR
-    records = panel(coins, start, end, min_assets=args.min_assets)
+    records = panel(coins, start, end, min_assets=args.min_assets, request_delay=args.request_delay)
     stats = quality(records, coins)
     write_jsonl(args.out, records)
     write_json(args.meta_out, {"selected_at_ms": int(time.time() * 1000), "assets": selected,
-                               "start_ms": start, "end_ms": end, "quality": stats})
+                               "start_ms": start, "end_ms": end, "price_source": "hourly_candle_open",
+                               "request_delay_seconds": args.request_delay, "quality": stats})
     print(json.dumps({"out": args.out, "meta_out": args.meta_out, "coins": coins, **stats}, indent=2))
 
 
