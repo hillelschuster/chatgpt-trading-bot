@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - ".crossvenue-trigger"
+      - ".crossvenue-trigger-2"
       - "crossvenue_snapshot.py"
       - "test_crossvenue_snapshot.py"
       - "CROSS_VENUE_EXPERIMENT.md"
@@ -29,12 +30,38 @@ jobs:
           python-version: "3.12"
       - run: python -m unittest -v test_crossvenue_snapshot.py
       - run: python -m py_compile crossvenue_snapshot.py test_crossvenue_snapshot.py
+      - name: Diagnose live public endpoints
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json, urllib.error
+          from crossvenue_snapshot import get_json, post_hl
+          checks = {}
+          calls = {
+              "hl_predictedFundings": lambda: post_hl({"type": "predictedFundings"}),
+              "hl_metaAndAssetCtxs": lambda: post_hl({"type": "metaAndAssetCtxs"}),
+              "hl_l2Book_BTC": lambda: post_hl({"type": "l2Book", "coin": "BTC"}),
+              "binance_premiumIndex_BTC": lambda: get_json("https://fapi.binance.com/fapi/v1/premiumIndex", {"symbol": "BTCUSDT"}),
+              "binance_depth_BTC": lambda: get_json("https://fapi.binance.com/fapi/v1/depth", {"symbol": "BTCUSDT", "limit": 5}),
+          }
+          for name, call in calls.items():
+              try:
+                  value = call()
+                  checks[name] = {"ok": True, "type": type(value).__name__, "sample": value[:1] if isinstance(value, list) else value}
+              except urllib.error.HTTPError as error:
+                  checks[name] = {"ok": False, "http_status": error.code, "body": error.read().decode(errors="replace")[:500]}
+              except Exception as error:
+                  checks[name] = {"ok": False, "error": repr(error)}
+          open("reports/probe_diagnostic.json", "w").write(json.dumps(checks, indent=2, default=str) + "\n")
+          print(json.dumps(checks, indent=2, default=str))
+          PY
       - name: Collect one live BTC/ETH snapshot
+        continue-on-error: true
         run: python crossvenue_snapshot.py --coins BTC,ETH --out reports/crossvenue_probe.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: crossvenue-probe-${{ github.run_id }}
-          path: reports/crossvenue_probe.jsonl
+          path: reports/
           retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error
