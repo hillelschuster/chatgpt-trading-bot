@@ -8,13 +8,17 @@ on:
       - "*.py"
       - ".github/workflows/funding-research.yml"
 
+concurrency:
+  group: funding-research
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,11 +26,20 @@ jobs:
           python-version: "3.12"
       - run: python -m unittest -v
       - run: python bootstrap_history.py --coins BTC,ETH,SOL --days 180 --out data/history.jsonl
-      - run: python research.py data/history.jsonl --out reports/funding_fade.json --min-trades 30
-      - name: Commit reproducible result
+      - name: Select edge and simulate deployable portfolio
+        run: >-
+          python research.py data/history.jsonl
+          --out reports/funding_fade.json
+          --trades-out reports/oos_trades.jsonl
+          --ledger-out reports/portfolio_ledger.jsonl
+          --min-trades 30 --capital 10000 --max-positions 3
+          --risk-fraction 1 --max-trade-notional 5000 --max-coin-positions 1
+      - name: Commit reproducible evidence
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add reports/funding_fade.json
-          git diff --cached --quiet || git commit -m "research: refresh funding-fade evidence [skip ci]"
+          git add reports/funding_fade.json reports/oos_trades.jsonl reports/portfolio_ledger.jsonl
+          git diff --cached --quiet && exit 0
+          git commit -m "research: refresh deployable funding evidence [skip ci]"
+          git pull --rebase origin main
           git push
