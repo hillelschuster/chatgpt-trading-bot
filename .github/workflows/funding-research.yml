@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "17 3 * * *"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".research-trigger"
 
 concurrency:
   group: research
