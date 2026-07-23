@@ -37,6 +37,12 @@ class HealthTest(unittest.TestCase):
             "event_id": "e1", "pnl_status": "complete",
             "funding_boundary_ms": cutoff + DAY_MS}]
         write_jsonl(data / "crossvenue_pnl_events.jsonl", pnl)
+        write_json(reports / "crossvenue_actions_health.json", {
+            "status": "HEALTHY", "latest_run": {"id": 10, "status": "completed"},
+            "latest_success": {"id": 10, "age_minutes": 2},
+            "active": {"count": 0}, "failures": {"consecutive": 0},
+            "restoration": {"workflow_run_id": 10, "matches_latest_success": True},
+            "blockers": []})
         write_json(reports / "crossvenue_chain.json", {"valid": True, "errors": []})
         write_json(reports / "crossvenue_coverage.json", {
             "status": "COLLECTING", "collection_span_days": 1,
@@ -56,6 +62,8 @@ class HealthTest(unittest.TestCase):
             self.assertFalse(result["integrity"]["blockers"])
             self.assertTrue(result["integrity"]["required_data_present"])
             self.assertTrue(result["integrity"]["required_reports_present"])
+            self.assertEqual("HEALTHY", result["operations"]["status"])
+            self.assertTrue(result["operations"]["restoration"]["matches_latest_success"])
 
     def test_complete_rows_count_unique_periods(self):
         with tempfile.TemporaryDirectory() as root:
@@ -74,6 +82,26 @@ class HealthTest(unittest.TestCase):
             self.assertEqual(2, result["counts"]["complete_pnl_rows"])
             self.assertEqual(1, result["counts"]["complete_periods"])
             self.assertEqual("ACCUMULATING_PNL", result["status"])
+
+    def test_unhealthy_collector_fails_combined_health_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            write_json(reports / "crossvenue_actions_health.json", {
+                "status": "INVALID", "blockers": ["successful_run_stale"]})
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("collector_workflow_unhealthy", result["integrity"]["blockers"])
+            self.assertEqual(["successful_run_stale"], result["operations"]["blockers"])
+
+    def test_missing_actions_health_fails_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            (reports / "crossvenue_actions_health.json").unlink()
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("required_reports_missing", result["integrity"]["blockers"])
+            self.assertIn("actions_health_missing", result["integrity"]["blockers"])
+            self.assertEqual(["crossvenue_actions_health.json"], result["integrity"]["missing_reports"])
 
     def test_invalid_chain_fails_closed(self):
         with tempfile.TemporaryDirectory() as root:
