@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Frozen validation gate for post-freeze prospective cross-venue P&L evidence."""
-import argparse, json, random, statistics
+"""Frozen validation gate for manifest-bound prospective cross-venue P&L evidence."""
+import argparse, hashlib, json, random, statistics
 from collections import defaultdict
 from pathlib import Path
 
 DEVELOPMENT_COMPLETE_EVENTS = 140
 HOLDOUT_COMPLETE_EVENTS = 60
-MIN_COMPLETE_EVENTS = DEVELOPMENT_COMPLETE_EVENTS + HOLDOUT_COMPLETE_EVENTS
+MIN_COMPLETE_EVENTS = 200
 BLOCK_SIZE = 8
 BOOTSTRAP_SAMPLES = 4000
 CAPITAL_FRACTION = 0.10
@@ -20,34 +20,43 @@ def read_jsonl(path):
     return [] if not target.exists() else [json.loads(x) for x in target.read_text().splitlines() if x.strip()]
 
 
+def manifest_identity(path):
+    raw = Path(path).read_bytes(); manifest = json.loads(raw)
+    return {"schema": manifest.get("schema"), "frozen_at_ms": int(manifest.get("frozen_at_ms") or 0),
+            "evidence_cutoff_ms": int(manifest.get("evidence_cutoff_ms") or 0),
+            "sha256": hashlib.sha256(raw).hexdigest()}
+
+
 def event_time(row):
     for key in ("funding_boundary_ms", "boundary_ms", "entry_time_ms", "signal_time_ms", "time"):
-        if row.get(key) is not None:
-            return int(row[key])
+        if row.get(key) is not None: return int(row[key])
     return 0
 
 
-def eligible_attempts(rows, evidence_cutoff_ms=0):
-    attempts = [r for r in rows if r.get("pnl_status") in ("complete", "failed_attempt")
-                and (not evidence_cutoff_ms or event_time(r) > int(evidence_cutoff_ms))]
-    return sorted(attempts, key=lambda r: (event_time(r), str(r.get("event_id") or ""), str(r.get("coin") or "")))
+def eligible_attempts(rows, freeze):
+    cutoff = freeze["evidence_cutoff_ms"]; digest = freeze["sha256"]
+    attempts, mismatched = [], 0
+    for row in rows:
+        if row.get("pnl_status") not in ("complete", "failed_attempt"): continue
+        if event_time(row) <= cutoff: continue
+        if (row.get("experiment_freeze") or {}).get("sha256") != digest:
+            mismatched += 1; continue
+        attempts.append(row)
+    attempts.sort(key=lambda r: (event_time(r), str(r.get("event_id") or ""), str(r.get("coin") or "")))
+    return attempts, mismatched
 
 
 def split_attempts(attempts):
-    development, holdout = [], []
-    development_complete = 0
+    development, holdout, complete = [], [], 0
     for row in attempts:
-        if development_complete < DEVELOPMENT_COMPLETE_EVENTS:
-            development.append(row)
-            development_complete += row.get("pnl_status") == "complete"
-        else:
-            holdout.append(row)
+        if complete < DEVELOPMENT_COMPLETE_EVENTS:
+            development.append(row); complete += row.get("pnl_status") == "complete"
+        else: holdout.append(row)
     return development, holdout
 
 
 def moving_block_lcb(values, block_size=BLOCK_SIZE, samples=BOOTSTRAP_SAMPLES, seed=SEED):
-    if not values:
-        return None
+    if not values: return None
     n = len(values); block = max(1, min(block_size, n)); starts = list(range(n - block + 1))
     rng = random.Random(seed); means = []
     for _ in range(samples):
@@ -77,55 +86,53 @@ def concentration(rows):
     return (max(positives.values()) / total if total else None), dict(sorted(by_coin.items()))
 
 
-def validate(rows, evidence_cutoff_ms=0):
+def validate(rows, freeze):
     all_attempts = [r for r in rows if r.get("pnl_status") in ("complete", "failed_attempt")]
-    attempts = eligible_attempts(rows, evidence_cutoff_ms)
+    attempts, mismatched = eligible_attempts(rows, freeze)
     development, holdout = split_attempts(attempts)
     development_complete = sum(r["pnl_status"] == "complete" for r in development)
     holdout_complete = sum(r["pnl_status"] == "complete" for r in holdout)
-    ready = development_complete >= DEVELOPMENT_COMPLETE_EVENTS and holdout_complete >= HOLDOUT_COMPLETE_EVENTS
-    evaluated_holdout = holdout if ready else []
-    base = [float(r["base_net_return_pct"]) for r in evaluated_holdout]
-    stress = [float(r["stress_net_return_pct"]) for r in evaluated_holdout]
+    integrity_ok = mismatched == 0
+    ready = integrity_ok and development_complete >= DEVELOPMENT_COMPLETE_EVENTS and holdout_complete >= HOLDOUT_COMPLETE_EVENTS
+    evaluated = holdout if ready else []
+    base = [float(r["base_net_return_pct"]) for r in evaluated]; stress = [float(r["stress_net_return_pct"]) for r in evaluated]
     lcb = moving_block_lcb(base) if ready else None
-    base_portfolio = finite_capital(evaluated_holdout, "base_net_return_pct") if ready else None
-    stress_portfolio = finite_capital(evaluated_holdout, "stress_net_return_pct") if ready else None
-    conc, by_coin = concentration(evaluated_holdout) if ready else (None, {})
-    failure_rate = (sum(r["pnl_status"] == "failed_attempt" for r in evaluated_holdout) /
-                    len(evaluated_holdout)) if evaluated_holdout else None
-    gates = {"minimum_complete_events": ready,
+    bp = finite_capital(evaluated, "base_net_return_pct") if ready else None
+    sp = finite_capital(evaluated, "stress_net_return_pct") if ready else None
+    conc, by_coin = concentration(evaluated) if ready else (None, {})
+    failure_rate = sum(r["pnl_status"] == "failed_attempt" for r in evaluated) / len(evaluated) if evaluated else None
+    gates = {"manifest_binding_valid": integrity_ok, "minimum_complete_events": ready,
              "holdout_block_bootstrap_lcb_positive": lcb is not None and lcb > 0,
              "holdout_stress_mean_positive": bool(stress) and statistics.fmean(stress) > 0,
-             "holdout_base_portfolio_positive": base_portfolio is not None and base_portfolio["return_pct"] > 0,
-             "holdout_stress_portfolio_positive": stress_portfolio is not None and stress_portfolio["return_pct"] > 0,
+             "holdout_base_portfolio_positive": bp is not None and bp["return_pct"] > 0,
+             "holdout_stress_portfolio_positive": sp is not None and sp["return_pct"] > 0,
              "positive_pnl_concentration_at_most_50pct": conc is not None and conc <= MAX_POSITIVE_CONCENTRATION,
              "failed_attempt_rate_at_most_10pct": failure_rate is not None and failure_rate <= MAX_FAILED_ATTEMPT_RATE}
-    verdict = "COLLECTING" if not ready else "PASS" if all(gates.values()) else "REJECT"
+    verdict = "INVALID" if not integrity_ok else "COLLECTING" if not ready else "PASS" if all(gates.values()) else "REJECT"
     report = {"contract": {"development_complete_events": DEVELOPMENT_COMPLETE_EVENTS,
                             "holdout_complete_events": HOLDOUT_COMPLETE_EVENTS,
                             "minimum_complete_events": MIN_COMPLETE_EVENTS,
-                            "partition_rule": "first 140 post-freeze complete events plus intervening failures are development; all later attempts are holdout",
                             "block_size_events": BLOCK_SIZE, "bootstrap_samples": BOOTSTRAP_SAMPLES,
                             "capital_fraction_per_attempt": CAPITAL_FRACTION,
                             "max_positive_pnl_concentration": MAX_POSITIVE_CONCENTRATION,
                             "max_failed_attempt_rate": MAX_FAILED_ATTEMPT_RATE, "seed": SEED},
+              "experiment_freeze": freeze, "manifest_mismatched_attempts": mismatched,
               "verdict": verdict, "profitability_claim_permitted": verdict == "PASS",
-              "evidence_cutoff_ms": int(evidence_cutoff_ms or 0),
-              "excluded_prefreeze_attempts": len(all_attempts) - len(attempts),
-              "total_attempts": len(attempts),
-              "complete_events": development_complete + holdout_complete,
+              "evidence_cutoff_ms": freeze["evidence_cutoff_ms"],
+              "excluded_prefreeze_or_unbound_attempts": len(all_attempts) - len(attempts),
+              "total_attempts": len(attempts), "complete_events": development_complete + holdout_complete,
               "development_attempts": len(development), "development_complete_events": development_complete,
               "holdout_attempts_collected": len(holdout), "holdout_complete_events_collected": holdout_complete,
-              "holdout_attempts_evaluated": len(evaluated_holdout),
+              "holdout_attempts_evaluated": len(evaluated),
               "holdout_base_mean_return_pct": statistics.fmean(base) if base else None,
               "holdout_base_block_bootstrap_lcb95_pct": lcb,
               "holdout_stress_mean_return_pct": statistics.fmean(stress) if stress else None,
               "holdout_failed_attempt_rate": failure_rate, "holdout_positive_pnl_concentration": conc,
               "holdout_by_coin_base_return_pct": by_coin,
-              "base_portfolio": ({k: v for k, v in base_portfolio.items() if k != "ledger"} if base_portfolio else None),
-              "stress_portfolio": ({k: v for k, v in stress_portfolio.items() if k != "ledger"} if stress_portfolio else None),
+              "base_portfolio": ({k: v for k, v in bp.items() if k != "ledger"} if bp else None),
+              "stress_portfolio": ({k: v for k, v in sp.items() if k != "ledger"} if sp else None),
               "gates": gates}
-    return report, (base_portfolio or {}).get("ledger", []), (stress_portfolio or {}).get("ledger", [])
+    return report, (bp or {}).get("ledger", []), (sp or {}).get("ledger", [])
 
 
 def write_json(path, value):
@@ -138,18 +145,15 @@ def write_jsonl(path, rows):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("path", nargs="?", default="data/crossvenue_pnl_events.jsonl")
-    parser.add_argument("--freeze-manifest", default="data/crossvenue_experiment_freeze.json")
-    parser.add_argument("--report", default="reports/crossvenue_validation.json")
-    parser.add_argument("--base-ledger", default="data/crossvenue_validation_base_ledger.jsonl")
-    parser.add_argument("--stress-ledger", default="data/crossvenue_validation_stress_ledger.jsonl")
-    args = parser.parse_args()
-    manifest = json.loads(Path(args.freeze_manifest).read_text())
-    report, base_ledger, stress_ledger = validate(
-        read_jsonl(args.path), manifest.get("evidence_cutoff_ms", 0))
-    write_json(args.report, report); write_jsonl(args.base_ledger, base_ledger); write_jsonl(args.stress_ledger, stress_ledger)
-    print(json.dumps({"report": args.report, **report}, indent=2, allow_nan=False))
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("path", nargs="?", default="data/crossvenue_pnl_events.jsonl")
+    p.add_argument("--freeze-manifest", default="data/crossvenue_experiment_freeze.json")
+    p.add_argument("--report", default="reports/crossvenue_validation.json")
+    p.add_argument("--base-ledger", default="data/crossvenue_validation_base_ledger.jsonl")
+    p.add_argument("--stress-ledger", default="data/crossvenue_validation_stress_ledger.jsonl")
+    a = p.parse_args(); report, base, stress = validate(read_jsonl(a.path), manifest_identity(a.freeze_manifest))
+    write_json(a.report, report); write_jsonl(a.base_ledger, base); write_jsonl(a.stress_ledger, stress)
+    print(json.dumps({"report": a.report, **report}, indent=2, allow_nan=False))
 
 
 if __name__ == "__main__": main()
