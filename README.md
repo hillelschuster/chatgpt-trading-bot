@@ -27,7 +27,7 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_pnl.py` applies the frozen two-leg accounting contract only to exact settled events. Base costs are 4.5 bps Hyperliquid taker, 5 bps OKX taker, 2 bps slippage per fill and 2 bps rebalancing across total capital, for a 15.5 bps total-capital reserve. Stress cost is 20 bps. Rejected coordinated attempts receive the predeclared one-leg unwind reserve. Pending or invalid events are never scored, and the report forbids profitability inference before the frozen validation gate has 200 independent complete funding periods spanning at least 56 days.
 
-`crossvenue_freeze.py` hashes the experiment specification and every module that can affect collection, eligibility, accounting, integrity, coverage, validation, or the authoritative promotion verdict. The first persistent run records the latest existing evidence timestamp as a cutoff. Later scheduled runs fail closed if any frozen file changes. Only attempts strictly after that cutoff are eligible for promotion, so code developed while observing earlier rows cannot claim them as prospective evidence. Coverage and promotion logic are part of the immutable contract; missing-data or verdict gates cannot be loosened without a visible pre-evidence re-freeze.
+`crossvenue_freeze.py` hashes the experiment specification and every module that can affect collection, eligibility, accounting, integrity, coverage, validation, or the authoritative promotion verdict. Every safe pre-evidence re-freeze now advances the cutoff to the latest timestamp across raw snapshots, event windows, settlement evidence, and P&L rows, and records a per-stream watermark. Thus code changed after observing raw market data cannot reuse those observations as prospective evidence. Later scheduled runs fail closed after complete evidence exists. Only attempts strictly after the resulting cutoff are eligible for promotion.
 
 `crossvenue_validate.py` uses a fixed, non-moving partition by synchronized funding period: the first 140 post-freeze complete periods plus intervening failed attempts are development; all later periods are holdout. A complete period is one funding boundary with at least one exact complete attempt, so simultaneous BTC/ETH attempts never count as independent samples. Holdout metrics and ledgers remain suppressed until 60 complete holdout periods and at least 56 elapsed collection days exist. Every simultaneous attempt sizes from the same pre-period equity, same-time returns are aggregated before compounding, and block-bootstrap inference operates on period returns. Promotion also requires a valid append-only chain report from the same run; missing or invalid chain evidence makes the study `INVALID` before any holdout metric is exposed. The remaining gates enforce the frozen 70% positive-P&L concentration ceiling and below-5% failed-attempt rate, plus bootstrap, stress and finite-capital requirements.
 
@@ -49,7 +49,11 @@ python crossvenue_settlements.py data/crossvenue_events.jsonl \
   --report reports/crossvenue_settlements.json
 python crossvenue_pnl.py data/crossvenue_settled_events.jsonl \
   --out data/crossvenue_pnl_events.jsonl --report reports/crossvenue_pnl.json
-python crossvenue_freeze.py --evidence data/crossvenue_pnl_events.jsonl
+python crossvenue_freeze.py \
+  --evidence data/crossvenue_snapshots.jsonl \
+  --evidence data/crossvenue_events.jsonl \
+  --evidence data/crossvenue_settled_events.jsonl \
+  --evidence data/crossvenue_pnl_events.jsonl
 python crossvenue_chain.py --previous-dir /tmp/crossvenue-prior \
   --current-dir data --report reports/crossvenue_chain.json
 python crossvenue_validate.py data/crossvenue_pnl_events.jsonl \
