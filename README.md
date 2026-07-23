@@ -33,10 +33,13 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_coverage.py` prevents outage-driven selection bias. After the freeze cutoff it requires at least 95% of expected five-minute coin-slots, at least 95% fully synchronized BTC/ETH slots, no duplicate coin-slot rows, and an event record for every funding opportunity observed with the required signal lead. `crossvenue_promote.py` is the authoritative verdict: profitability may be claimed only when both the frozen validation report and the 56-day coverage report pass. A profitable subset of surviving observations is never sufficient.
 
+`crossvenue_health.py` is deliberately outside the frozen experiment contract. Its separate hourly workflow downloads the latest immutable series artifact and reports collection staleness, append-only integrity, post-freeze counts, unique completed funding periods, coverage, and remaining promotion requirements. It never changes evidence, strategy logic, the freeze manifest, or the cutoff, so operational monitoring cannot reset the prospective experiment.
+
 ```bash
 python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py \
   test_crossvenue_settlements.py test_crossvenue_chain.py test_crossvenue_pnl.py \
-  test_crossvenue_freeze.py test_crossvenue_validate.py test_crossvenue_coverage.py
+  test_crossvenue_freeze.py test_crossvenue_validate.py test_crossvenue_coverage.py \
+  test_crossvenue_health.py
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl
 python crossvenue_events.py data/crossvenue_snapshots.jsonl \
@@ -60,6 +63,7 @@ python crossvenue_validate.py data/crossvenue_pnl_events.jsonl \
   --chain-report reports/crossvenue_chain.json
 python crossvenue_promote.py --validation reports/crossvenue_validation.json \
   --coverage reports/crossvenue_coverage.json
+python crossvenue_health.py --out reports/crossvenue_health.json
 ```
 
 Passing the authoritative promotion gate permits shadow signals only, not orders.
