@@ -15,6 +15,8 @@ on:
       - "crossvenue_pnl.py"
       - "crossvenue_freeze.py"
       - "crossvenue_validate.py"
+      - "crossvenue_coverage.py"
+      - "crossvenue_promote.py"
       - "test_crossvenue_snapshot.py"
       - "test_crossvenue_events.py"
       - "test_crossvenue_settlements.py"
@@ -22,6 +24,7 @@ on:
       - "test_crossvenue_pnl.py"
       - "test_crossvenue_freeze.py"
       - "test_crossvenue_validate.py"
+      - "test_crossvenue_coverage.py"
       - "CROSS_VENUE_EXPERIMENT.md"
       - ".github/workflows/crossvenue-probe.yml"
 
@@ -47,14 +50,15 @@ jobs:
           test_crossvenue_events.py test_crossvenue_settlements.py
           test_crossvenue_chain.py test_crossvenue_pnl.py
           test_crossvenue_freeze.py test_crossvenue_validate.py
+          test_crossvenue_coverage.py
       - run: >-
           python -m py_compile crossvenue_snapshot.py crossvenue_events.py
           crossvenue_settlements.py crossvenue_chain.py crossvenue_pnl.py
-          crossvenue_freeze.py crossvenue_validate.py
-          test_crossvenue_snapshot.py test_crossvenue_events.py
+          crossvenue_freeze.py crossvenue_validate.py crossvenue_coverage.py
+          crossvenue_promote.py test_crossvenue_snapshot.py test_crossvenue_events.py
           test_crossvenue_settlements.py test_crossvenue_chain.py
           test_crossvenue_pnl.py test_crossvenue_freeze.py
-          test_crossvenue_validate.py
+          test_crossvenue_validate.py test_crossvenue_coverage.py
       - name: Restore latest prospective series
         if: github.event_name != 'pull_request'
         env:
@@ -91,6 +95,14 @@ jobs:
           python crossvenue_events.py data/crossvenue_snapshots.jsonl
           --out data/crossvenue_events.jsonl
           --report reports/crossvenue_events.json
+      - name: Measure post-freeze observation coverage
+        run: >-
+          python crossvenue_coverage.py
+          --snapshots data/crossvenue_snapshots.jsonl
+          --events data/crossvenue_events.jsonl
+          --freeze-manifest data/crossvenue_experiment_freeze.json
+          --report reports/crossvenue_coverage.json
+          --coins BTC,ETH
       - name: Resume exact public realized funding
         run: >-
           python crossvenue_settlements.py data/crossvenue_events.jsonl
@@ -119,6 +131,12 @@ jobs:
           --report reports/crossvenue_validation.json
           --base-ledger data/crossvenue_validation_base_ledger.jsonl
           --stress-ledger data/crossvenue_validation_stress_ledger.jsonl
+      - name: Produce authoritative promotion verdict
+        run: >-
+          python crossvenue_promote.py
+          --validation reports/crossvenue_validation.json
+          --coverage reports/crossvenue_coverage.json
+          --report reports/crossvenue_promotion.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -134,9 +152,11 @@ jobs:
             reports/crossvenue_freeze.json
             reports/crossvenue_continuity.json
             reports/crossvenue_events.json
+            reports/crossvenue_coverage.json
             reports/crossvenue_settlements.json
             reports/crossvenue_pnl.json
             reports/crossvenue_validation.json
+            reports/crossvenue_promotion.json
             reports/crossvenue_chain.json
           retention-days: 90
           if-no-files-found: warn
