@@ -23,6 +23,11 @@ def read_jsonl(path):
     return [] if not target.exists() else [json.loads(x) for x in target.read_text().splitlines() if x.strip()]
 
 
+def read_json(path):
+    target = Path(path)
+    return None if not target.exists() else json.loads(target.read_text())
+
+
 def manifest_identity(path):
     raw = Path(path).read_bytes(); manifest = json.loads(raw)
     return {"schema": manifest.get("schema"), "frozen_at_ms": int(manifest.get("frozen_at_ms") or 0),
@@ -122,7 +127,18 @@ def concentration(rows):
     return (max(positives.values()) / total if total else None), dict(sorted(by_coin.items()))
 
 
-def validate(rows, freeze):
+def chain_identity(report):
+    if report is None:
+        return {"present": False, "valid": False, "errors": ["chain_report_missing"]}
+    errors = list(report.get("errors") or [])
+    valid = report.get("valid") is True and not errors
+    return {"present": True, "valid": valid, "errors": errors,
+            "previous_artifact_present": bool(report.get("previous_artifact_present")),
+            "freeze_manifest_upgraded": bool(report.get("freeze_manifest_upgraded"))}
+
+
+def validate(rows, freeze, chain_report=None):
+    chain = chain_identity(chain_report)
     all_attempts = [r for r in rows if r.get("pnl_status") in ("complete", "failed_attempt")]
     attempts, mismatched = eligible_attempts(rows, freeze)
     development, holdout = split_attempts(attempts)
@@ -133,7 +149,8 @@ def validate(rows, freeze):
     complete_times = [time for time, period in grouped_periods(attempts) if is_complete_period(period)]
     collection_span_days = ((complete_times[-1] - complete_times[0]) / DAY
                             if len(complete_times) > 1 else 0.0)
-    integrity_ok = mismatched == 0
+    manifest_ok = mismatched == 0
+    integrity_ok = manifest_ok and chain["valid"]
     sample_ready = (development_complete_periods >= DEVELOPMENT_COMPLETE_PERIODS
                     and holdout_complete_periods >= HOLDOUT_COMPLETE_PERIODS)
     span_ready = collection_span_days >= MIN_COLLECTION_DAYS
@@ -146,7 +163,8 @@ def validate(rows, freeze):
     sp = finite_capital(evaluated, "stress_net_return_pct") if ready else None
     conc, by_coin = concentration(evaluated) if ready else (None, {})
     failure_rate = sum(r["pnl_status"] == "failed_attempt" for r in evaluated) / len(evaluated) if evaluated else None
-    gates = {"manifest_binding_valid": integrity_ok, "minimum_complete_periods": sample_ready,
+    gates = {"append_only_chain_valid": chain["valid"],
+             "manifest_binding_valid": manifest_ok, "minimum_complete_periods": sample_ready,
              "minimum_collection_span_56_days": span_ready,
              "holdout_block_bootstrap_lcb_positive": lcb is not None and lcb > 0,
              "holdout_stress_period_mean_positive": bool(stress_periods) and statistics.fmean(stress_periods) > 0,
@@ -165,7 +183,8 @@ def validate(rows, freeze):
                             "max_total_fraction_per_period": MAX_TOTAL_FRACTION_PER_PERIOD,
                             "max_positive_pnl_concentration": MAX_POSITIVE_CONCENTRATION,
                             "max_failed_attempt_rate": MAX_FAILED_ATTEMPT_RATE, "seed": SEED},
-              "experiment_freeze": freeze, "manifest_mismatched_attempts": mismatched,
+              "experiment_freeze": freeze, "artifact_chain": chain,
+              "manifest_mismatched_attempts": mismatched,
               "verdict": verdict, "profitability_claim_permitted": verdict == "PASS",
               "evidence_cutoff_ms": freeze["evidence_cutoff_ms"],
               "excluded_prefreeze_or_unbound_attempts": len(all_attempts) - len(attempts),
@@ -203,12 +222,17 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("path", nargs="?", default="data/crossvenue_pnl_events.jsonl")
     p.add_argument("--freeze-manifest", default="data/crossvenue_experiment_freeze.json")
+    p.add_argument("--chain-report", default="reports/crossvenue_chain.json")
     p.add_argument("--report", default="reports/crossvenue_validation.json")
     p.add_argument("--base-ledger", default="data/crossvenue_validation_base_ledger.jsonl")
     p.add_argument("--stress-ledger", default="data/crossvenue_validation_stress_ledger.jsonl")
-    a = p.parse_args(); report, base, stress = validate(read_jsonl(a.path), manifest_identity(a.freeze_manifest))
+    a = p.parse_args()
+    report, base, stress = validate(
+        read_jsonl(a.path), manifest_identity(a.freeze_manifest), read_json(a.chain_report))
     write_json(a.report, report); write_jsonl(a.base_ledger, base); write_jsonl(a.stress_ledger, stress)
     print(json.dumps({"report": a.report, **report}, indent=2, allow_nan=False))
+    if report["verdict"] == "INVALID":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__": main()
