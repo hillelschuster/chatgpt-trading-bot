@@ -22,6 +22,10 @@ def read_json(path):
     return json.loads(Path(path).read_text())
 
 
+def as_int(value, default=0):
+    return default if value is None else int(value)
+
+
 def boundary_key(row):
     hl = row.get("hyperliquid") or {}
     okx = row.get("okx_swap") or {}
@@ -31,11 +35,11 @@ def boundary_key(row):
 
 
 def coverage(snapshots, events, freeze, coins=("BTC", "ETH"), cadence_ms=CADENCE_MS):
-    cutoff = int(freeze.get("evidence_cutoff_ms") or 0)
+    cutoff = as_int(freeze.get("evidence_cutoff_ms"), 0)
     expected_coins = {str(c).upper() for c in coins}
-    rows = [r for r in snapshots if int(r.get("captured_at_ms") or 0) > cutoff
+    rows = [r for r in snapshots if as_int(r.get("captured_at_ms"), 0) > cutoff
             and str(r.get("coin") or "").upper() in expected_coins]
-    keys = [(int(r.get("cadence_slot_ms") or -1), str(r.get("coin") or "").upper()) for r in rows]
+    keys = [(as_int(r.get("cadence_slot_ms"), -1), str(r.get("coin") or "").upper()) for r in rows]
     duplicate_rows = len(keys) - len(set(keys))
     slots = sorted({slot for slot, _ in keys if slot >= 0})
     first_slot = slots[0] if slots else None
@@ -45,7 +49,7 @@ def coverage(snapshots, events, freeze, coins=("BTC", "ETH"), cadence_ms=CADENCE
     for slot, coin in keys:
         if slot >= 0:
             by_slot[slot].add(coin)
-    observed_coin_slots = len(set(keys))
+    observed_coin_slots = len({key for key in keys if key[0] >= 0})
     expected_coin_slots = expected_slots * len(expected_coins)
     complete_slots = sum(by_slot[slot] == expected_coins for slot in slots)
     slot_coverage = observed_coin_slots / expected_coin_slots if expected_coin_slots else 0.0
@@ -55,10 +59,10 @@ def coverage(snapshots, events, freeze, coins=("BTC", "ETH"), cadence_ms=CADENCE
     opportunities = set()
     for row in rows:
         key = boundary_key(row)
-        if key and int(row["captured_at_ms"]) <= min(key[1], key[2]) - MIN_SIGNAL_LEAD_MS:
+        if key and as_int(row.get("captured_at_ms"), 0) <= min(key[1], key[2]) - MIN_SIGNAL_LEAD_MS:
             opportunities.add(key)
-    event_keys = {(str(e.get("coin")), int(e.get("hyperliquid_funding_time_ms") or 0),
-                   int(e.get("okx_funding_time_ms") or 0)) for e in events}
+    event_keys = {(str(e.get("coin")), as_int(e.get("hyperliquid_funding_time_ms"), 0),
+                   as_int(e.get("okx_funding_time_ms"), 0)) for e in events}
     accounted = len(opportunities & event_keys)
     event_accounting = accounted / len(opportunities) if opportunities else 0.0
 
