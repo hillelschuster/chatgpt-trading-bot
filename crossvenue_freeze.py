@@ -35,14 +35,20 @@ def read_jsonl(path):
 
 
 def event_time(row):
-    for key in ("funding_boundary_ms", "boundary_ms", "entry_time_ms", "signal_time_ms", "time"):
+    for key in ("captured_at_ms", "funding_boundary_ms", "boundary_ms", "entry_time_ms",
+                "signal_time_ms", "time"):
         if row.get(key) is not None:
             return int(row[key])
     return 0
 
 
+def evidence_watermarks(paths):
+    return {str(path): max((event_time(row) for row in read_jsonl(path)), default=0)
+            for path in paths}
+
+
 def latest_evidence_ms(paths):
-    return max((event_time(row) for path in paths for row in read_jsonl(path)), default=0)
+    return max(evidence_watermarks(paths).values(), default=0)
 
 
 def has_complete_evidence(paths):
@@ -50,10 +56,12 @@ def has_complete_evidence(paths):
 
 
 def new_manifest(hashes, evidence_paths, now_ms):
+    watermarks = evidence_watermarks(evidence_paths)
     return {
         "schema": SCHEMA,
         "frozen_at_ms": int(now_ms if now_ms is not None else time.time() * 1000),
-        "evidence_cutoff_ms": latest_evidence_ms(evidence_paths),
+        "evidence_cutoff_ms": max(watermarks.values(), default=0),
+        "evidence_watermarks_ms": watermarks,
         "files": hashes,
         "rule": "Only attempts strictly after evidence_cutoff_ms are eligible for promotion.",
     }
@@ -78,7 +86,6 @@ def verify_or_create(manifest_path, files=DEFAULT_FILES, evidence_paths=(), now_
             manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
             return manifest, True
         return manifest, False
-
     manifest = new_manifest(hashes, evidence_paths, now_ms)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -110,6 +117,7 @@ def main():
         "schema": manifest["schema"],
         "frozen_at_ms": manifest["frozen_at_ms"],
         "evidence_cutoff_ms": manifest["evidence_cutoff_ms"],
+        "evidence_watermarks_ms": manifest.get("evidence_watermarks_ms", {}),
         "files": manifest["files"],
     }
     write_json(args.report, report)
