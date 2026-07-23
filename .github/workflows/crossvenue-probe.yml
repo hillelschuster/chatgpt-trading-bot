@@ -103,20 +103,22 @@ jobs:
           --freeze-manifest data/crossvenue_experiment_freeze.json
           --out data/crossvenue_pnl_events.jsonl
           --report reports/crossvenue_pnl.json
-      - name: Run frozen prospective validation gate
-        run: >-
-          python crossvenue_validate.py data/crossvenue_pnl_events.jsonl
-          --freeze-manifest data/crossvenue_experiment_freeze.json
-          --report reports/crossvenue_validation.json
-          --base-ledger data/crossvenue_validation_base_ledger.jsonl
-          --stress-ledger data/crossvenue_validation_stress_ledger.jsonl
       - name: Verify append-only artifact chain
+        continue-on-error: true
         run: |
           args=()
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then args+=(--require-previous); fi
           python crossvenue_chain.py \
             --previous-dir /tmp/crossvenue-prior --current-dir data \
             --report reports/crossvenue_chain.json "${args[@]}"
+      - name: Run frozen prospective validation gate
+        run: >-
+          python crossvenue_validate.py data/crossvenue_pnl_events.jsonl
+          --freeze-manifest data/crossvenue_experiment_freeze.json
+          --chain-report reports/crossvenue_chain.json
+          --report reports/crossvenue_validation.json
+          --base-ledger data/crossvenue_validation_base_ledger.jsonl
+          --stress-ledger data/crossvenue_validation_stress_ledger.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
