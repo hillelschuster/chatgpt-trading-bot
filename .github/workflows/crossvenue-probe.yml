@@ -10,8 +10,10 @@ on:
       - ".crossvenue-trigger"
       - "crossvenue_snapshot.py"
       - "crossvenue_events.py"
+      - "crossvenue_settlements.py"
       - "test_crossvenue_snapshot.py"
       - "test_crossvenue_events.py"
+      - "test_crossvenue_settlements.py"
       - "CROSS_VENUE_EXPERIMENT.md"
       - ".github/workflows/crossvenue-probe.yml"
 
@@ -32,8 +34,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py
-      - run: python -m py_compile crossvenue_snapshot.py crossvenue_events.py test_crossvenue_snapshot.py test_crossvenue_events.py
+      - run: >-
+          python -m unittest -v test_crossvenue_snapshot.py
+          test_crossvenue_events.py test_crossvenue_settlements.py
+      - run: >-
+          python -m py_compile crossvenue_snapshot.py crossvenue_events.py
+          crossvenue_settlements.py test_crossvenue_snapshot.py
+          test_crossvenue_events.py test_crossvenue_settlements.py
       - name: Restore latest prospective series
         if: github.event_name != 'pull_request'
         env:
@@ -56,6 +63,11 @@ jobs:
           python crossvenue_events.py data/crossvenue_snapshots.jsonl
           --out data/crossvenue_events.jsonl
           --report reports/crossvenue_events.json
+      - name: Join exact public realized funding
+        run: >-
+          python crossvenue_settlements.py data/crossvenue_events.jsonl
+          --out data/crossvenue_settled_events.jsonl
+          --report reports/crossvenue_settlements.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -63,7 +75,9 @@ jobs:
           path: |
             data/crossvenue_snapshots.jsonl
             data/crossvenue_events.jsonl
+            data/crossvenue_settled_events.jsonl
             reports/crossvenue_continuity.json
             reports/crossvenue_events.json
+            reports/crossvenue_settlements.json
           retention-days: 90
           if-no-files-found: warn
