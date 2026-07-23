@@ -13,12 +13,14 @@ on:
       - "crossvenue_settlements.py"
       - "crossvenue_chain.py"
       - "crossvenue_pnl.py"
+      - "crossvenue_freeze.py"
       - "crossvenue_validate.py"
       - "test_crossvenue_snapshot.py"
       - "test_crossvenue_events.py"
       - "test_crossvenue_settlements.py"
       - "test_crossvenue_chain.py"
       - "test_crossvenue_pnl.py"
+      - "test_crossvenue_freeze.py"
       - "test_crossvenue_validate.py"
       - "CROSS_VENUE_EXPERIMENT.md"
       - ".github/workflows/crossvenue-probe.yml"
@@ -44,13 +46,14 @@ jobs:
           python -m unittest -v test_crossvenue_snapshot.py
           test_crossvenue_events.py test_crossvenue_settlements.py
           test_crossvenue_chain.py test_crossvenue_pnl.py
-          test_crossvenue_validate.py
+          test_crossvenue_freeze.py test_crossvenue_validate.py
       - run: >-
           python -m py_compile crossvenue_snapshot.py crossvenue_events.py
           crossvenue_settlements.py crossvenue_chain.py crossvenue_pnl.py
-          crossvenue_validate.py test_crossvenue_snapshot.py
-          test_crossvenue_events.py test_crossvenue_settlements.py
-          test_crossvenue_chain.py test_crossvenue_pnl.py
+          crossvenue_freeze.py crossvenue_validate.py
+          test_crossvenue_snapshot.py test_crossvenue_events.py
+          test_crossvenue_settlements.py test_crossvenue_chain.py
+          test_crossvenue_pnl.py test_crossvenue_freeze.py
           test_crossvenue_validate.py
       - name: Restore latest prospective series
         if: github.event_name != 'pull_request'
@@ -64,6 +67,12 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/previous.zip
             unzip -o /tmp/previous.zip -d .
           fi
+      - name: Freeze or verify the prospective experiment contract
+        run: >-
+          python crossvenue_freeze.py
+          --manifest data/crossvenue_experiment_freeze.json
+          --evidence data/crossvenue_pnl_events.jsonl
+          --report reports/crossvenue_freeze.json
       - name: Capture restored baseline
         run: |
           mkdir -p /tmp/crossvenue-prior
@@ -94,6 +103,7 @@ jobs:
       - name: Run frozen prospective validation gate
         run: >-
           python crossvenue_validate.py data/crossvenue_pnl_events.jsonl
+          --freeze-manifest data/crossvenue_experiment_freeze.json
           --report reports/crossvenue_validation.json
           --base-ledger data/crossvenue_validation_base_ledger.jsonl
           --stress-ledger data/crossvenue_validation_stress_ledger.jsonl
@@ -109,12 +119,14 @@ jobs:
         with:
           name: ${{ github.event_name == 'pull_request' && format('crossvenue-probe-{0}', github.run_id) || 'crossvenue-series' }}
           path: |
+            data/crossvenue_experiment_freeze.json
             data/crossvenue_snapshots.jsonl
             data/crossvenue_events.jsonl
             data/crossvenue_settled_events.jsonl
             data/crossvenue_pnl_events.jsonl
             data/crossvenue_validation_base_ledger.jsonl
             data/crossvenue_validation_stress_ledger.jsonl
+            reports/crossvenue_freeze.json
             reports/crossvenue_continuity.json
             reports/crossvenue_events.json
             reports/crossvenue_settlements.json
