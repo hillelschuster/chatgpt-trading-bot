@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from crossvenue_freeze import DEFAULT_FILES, SCHEMA, verify_or_create
+from crossvenue_freeze import DEFAULT_FILES, SCHEMA, event_time, verify_or_create
 from crossvenue_validate import validate
 
 
@@ -25,6 +25,25 @@ class CrossVenueFreezeTest(unittest.TestCase):
             self.assertTrue(created)
             self.assertEqual(SCHEMA, manifest["schema"])
             self.assertEqual(7000, manifest["evidence_cutoff_ms"])
+
+    def test_event_time_prefers_raw_snapshot_timestamp(self):
+        self.assertEqual(123, event_time({"captured_at_ms": 123, "boundary_ms": 999}))
+
+    def test_creation_uses_all_evidence_streams_and_records_watermarks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "logic.py"; source.write_text("v1\n")
+            snapshots = root / "snapshots.jsonl"
+            events = root / "events.jsonl"
+            pnl = root / "pnl.jsonl"
+            snapshots.write_text(json.dumps({"captured_at_ms": 9000}) + "\n")
+            events.write_text(json.dumps({"funding_boundary_ms": 7000}) + "\n")
+            pnl.write_text(json.dumps({"boundary_ms": 3000, "pnl_status": "pending"}) + "\n")
+            manifest, _ = verify_or_create(root / "freeze.json", (source,),
+                                           (snapshots, events, pnl), now_ms=10000)
+            self.assertEqual(9000, manifest["evidence_cutoff_ms"])
+            self.assertEqual({str(snapshots): 9000, str(events): 7000, str(pnl): 3000},
+                             manifest["evidence_watermarks_ms"])
 
     def test_unchanged_contract_reopens_and_mutation_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -52,6 +71,20 @@ class CrossVenueFreezeTest(unittest.TestCase):
             self.assertTrue(changed)
             self.assertEqual(7000, upgraded["evidence_cutoff_ms"])
             self.assertEqual(9, upgraded["frozen_at_ms"])
+
+    def test_safe_upgrade_discards_already_observed_raw_market_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "logic.py"; source.write_text("v1\n")
+            path = root / "freeze.json"
+            verify_or_create(path, (source,), (), now_ms=1)
+            snapshots = root / "snapshots.jsonl"
+            snapshots.write_text(json.dumps({"captured_at_ms": 12345}) + "\n")
+            source.write_text("v2\n")
+            upgraded, changed = verify_or_create(
+                path, (source,), (snapshots,), now_ms=13000, allow_safe_upgrade=True)
+            self.assertTrue(changed)
+            self.assertEqual(12345, upgraded["evidence_cutoff_ms"])
 
     def test_safe_upgrade_fails_after_complete_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
