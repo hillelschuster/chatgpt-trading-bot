@@ -33,13 +33,15 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_coverage.py` prevents outage-driven selection bias. After the freeze cutoff it requires at least 95% of expected five-minute coin-slots, at least 95% fully synchronized BTC/ETH slots, no duplicate coin-slot rows, and an event record for every funding opportunity observed with the required signal lead. `crossvenue_promote.py` is the authoritative verdict: profitability may be claimed only when both the frozen validation report and the 56-day coverage report pass. A profitable subset of surviving observations is never sufficient.
 
-`crossvenue_health.py` is deliberately outside the frozen experiment contract. Its separate hourly workflow downloads the latest immutable series artifact and reports collection staleness, append-only integrity, post-freeze counts, unique completed funding periods, coverage, and remaining promotion requirements. It fails closed if any required data/report is missing, the chain is absent or invalid, validation/promotion is invalid, counts are internally impossible, or collection is stale. It never changes evidence, strategy logic, the freeze manifest, or the cutoff, so operational monitoring cannot reset the prospective experiment.
+`crossvenue_artifact.py` restores the newest non-expired artifact only when its producing run completed successfully and was triggered by the schedule or an explicit workflow dispatch. Failed, cancelled, in-progress, and pull-request artifacts are skipped; lookup paginates backward to preserve the last known-good evidence chain through a prolonged outage. Both collection and health monitoring use this selector, so an always-uploaded partial failure artifact cannot replace valid prospective state.
+
+`crossvenue_health.py` is deliberately outside the frozen experiment contract. Its separate hourly workflow downloads the latest successful immutable series artifact and reports collection staleness, append-only integrity, post-freeze counts, unique completed funding periods, coverage, and remaining promotion requirements. It fails closed if any required data/report is missing, the chain is absent or invalid, validation/promotion is invalid, counts are internally impossible, or collection is stale. It never changes evidence, strategy logic, the freeze manifest, or the cutoff, so operational monitoring cannot reset the prospective experiment.
 
 ```bash
 python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py \
   test_crossvenue_settlements.py test_crossvenue_chain.py test_crossvenue_pnl.py \
   test_crossvenue_freeze.py test_crossvenue_validate.py test_crossvenue_coverage.py \
-  test_crossvenue_health.py
+  test_crossvenue_health.py test_crossvenue_artifact.py
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl
 python crossvenue_events.py data/crossvenue_snapshots.jsonl \
