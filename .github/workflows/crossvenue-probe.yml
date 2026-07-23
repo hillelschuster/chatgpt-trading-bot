@@ -62,14 +62,16 @@ jobs:
           test_crossvenue_chain.py test_crossvenue_pnl.py test_crossvenue_freeze.py
           test_crossvenue_validate.py test_crossvenue_coverage.py
           test_crossvenue_artifact.py
-      - name: Restore latest successful prospective series
+      - name: Restore latest approved successful prospective series
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p data
           python crossvenue_artifact.py --repository "$GITHUB_REPOSITORY" \
-            --artifact-name crossvenue-series --out /tmp/previous.zip
+            --artifact-name crossvenue-series --branch main \
+            --workflow-path .github/workflows/crossvenue-probe.yml \
+            --out /tmp/previous.zip
           if [ -s /tmp/previous.zip ]; then unzip -o /tmp/previous.zip -d .; fi
       - name: Capture restored baseline
         run: |
