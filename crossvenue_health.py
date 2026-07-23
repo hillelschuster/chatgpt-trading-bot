@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize prospective cross-venue evidence progress without touching the frozen contract."""
+"""Summarize prospective cross-venue evidence and collector health without changing the frozen contract."""
 import argparse
 import json
 import time
@@ -19,6 +19,7 @@ REQUIRED_DATA = (
     "crossvenue_pnl_events.jsonl",
 )
 REQUIRED_REPORTS = (
+    "crossvenue_actions_health.json",
     "crossvenue_chain.json",
     "crossvenue_coverage.json",
     "crossvenue_validation.json",
@@ -74,6 +75,7 @@ def summarize(data_dir, reports_dir, now_ms=None):
     events = read_jsonl(data_dir / "crossvenue_events.jsonl")
     settlements = read_jsonl(data_dir / "crossvenue_settled_events.jsonl")
     pnl = read_jsonl(data_dir / "crossvenue_pnl_events.jsonl")
+    actions_health = read_json(reports_dir / "crossvenue_actions_health.json", {}) or {}
     chain = read_json(reports_dir / "crossvenue_chain.json", {}) or {}
     coverage = read_json(reports_dir / "crossvenue_coverage.json", {}) or {}
     validation = read_json(reports_dir / "crossvenue_validation.json", {}) or {}
@@ -96,6 +98,10 @@ def summarize(data_dir, reports_dir, now_ms=None):
         blockers.append("required_reports_missing")
     if not manifest:
         blockers.append("freeze_manifest_missing")
+    if not actions_health:
+        blockers.append("actions_health_missing")
+    elif actions_health.get("status") != "HEALTHY":
+        blockers.append("collector_workflow_unhealthy")
     if not chain:
         blockers.append("artifact_chain_missing")
     elif not chain.get("valid", False):
@@ -141,6 +147,15 @@ def summarize(data_dir, reports_dir, now_ms=None):
                        "stale_minutes": stale_minutes, "slot_coverage": coverage.get("slot_coverage"),
                        "complete_slot_coverage": coverage.get("complete_slot_coverage"),
                        "event_accounting": coverage.get("event_accounting")},
+        "operations": {
+            "status": actions_health.get("status"),
+            "latest_run": actions_health.get("latest_run"),
+            "latest_success": actions_health.get("latest_success"),
+            "active": actions_health.get("active"),
+            "failures": actions_health.get("failures"),
+            "restoration": actions_health.get("restoration"),
+            "blockers": actions_health.get("blockers", []),
+        },
         "integrity": {"required_data_present": not missing_data,
                       "required_reports_present": not missing_reports,
                       "missing_data": missing_data, "missing_reports": missing_reports,
