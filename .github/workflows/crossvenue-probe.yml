@@ -67,6 +67,13 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/previous.zip
             unzip -o /tmp/previous.zip -d .
           fi
+      - name: Capture restored baseline
+        run: |
+          mkdir -p /tmp/crossvenue-prior
+          for file in crossvenue_experiment_freeze.json crossvenue_snapshots.jsonl \
+            crossvenue_events.jsonl crossvenue_settled_events.jsonl crossvenue_pnl_events.jsonl; do
+            if [ -f "data/$file" ]; then cp "data/$file" "/tmp/crossvenue-prior/$file"; fi
+          done
       - name: Freeze or verify the prospective experiment contract
         run: >-
           python crossvenue_freeze.py
@@ -74,12 +81,6 @@ jobs:
           --evidence data/crossvenue_pnl_events.jsonl
           --report reports/crossvenue_freeze.json
           --allow-safe-upgrade
-      - name: Capture restored baseline
-        run: |
-          mkdir -p /tmp/crossvenue-prior
-          for file in crossvenue_snapshots.jsonl crossvenue_events.jsonl crossvenue_settled_events.jsonl; do
-            if [ -f "data/$file" ]; then cp "data/$file" "/tmp/crossvenue-prior/$file"; fi
-          done
       - name: Collect and audit one BTC/ETH cadence slot
         run: |
           mkdir -p data reports
