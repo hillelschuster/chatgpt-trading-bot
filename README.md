@@ -23,9 +23,11 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_settlements.py` joins complete windows to exact venue-published realized funding. Restored observations are monotonic: completed settlements are never refetched or downgraded, partial venue observations are retained, only missing legs are queried, duplicate boundaries share one API request, and transient endpoint failures remain explicit pending evidence rather than destroying the artifact chain.
 
+`crossvenue_chain.py` compares every restored artifact with the newly generated series. Scheduled runs fail closed if no prior artifact is restored, any prior snapshot or event disappears, immutable event fields change, terminal event status regresses, exact settlement observations change, or settlement-attempt history decreases.
+
 ```bash
 python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py \
-  test_crossvenue_settlements.py
+  test_crossvenue_settlements.py test_crossvenue_chain.py
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
@@ -36,6 +38,8 @@ python crossvenue_settlements.py data/crossvenue_events.jsonl \
   --existing data/crossvenue_settled_events.jsonl \
   --out data/crossvenue_settled_events.jsonl \
   --report reports/crossvenue_settlements.json
+python crossvenue_chain.py --previous-dir /tmp/crossvenue-prior \
+  --current-dir data --report reports/crossvenue_chain.json
 ```
 
 The frozen promotion gate requires a positive quarantined-period block-bootstrap LCB95, positive stress-cost and finite-capital returns, controlled drawdown/concentration, low two-leg failure rate, and clean timestamp/data validation. Passing permits shadow signals only, not orders.
