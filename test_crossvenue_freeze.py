@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from crossvenue_freeze import DEFAULT_FILES, SCHEMA, event_time, verify_or_create
-from crossvenue_validate import validate
+from crossvenue_validate import eligible_attempts
 
 
 def pnl_row(i, value=.4, status="complete"):
@@ -115,11 +115,13 @@ class CrossVenueFreezeTest(unittest.TestCase):
             self.assertEqual({str(first), str(added)}, set(manifest["files"]))
 
     def test_validation_excludes_all_prefreeze_attempts(self):
-        rows = [pnl_row(i) for i in range(260)]
-        report, _, _ = validate(rows, evidence_cutoff_ms=59000)
-        self.assertEqual(200, report["complete_events"])
-        self.assertEqual(60, report["excluded_prefreeze_attempts"])
-        self.assertEqual(59000, report["evidence_cutoff_ms"])
+        rows = [{**pnl_row(i), "experiment_freeze": {"sha256": "freeze"}}
+                for i in range(260)]
+        attempts, mismatched = eligible_attempts(
+            rows, {"evidence_cutoff_ms": 59000, "sha256": "freeze"})
+        self.assertEqual(200, len(attempts))
+        self.assertEqual(0, mismatched)
+        self.assertGreater(min(row["boundary_ms"] for row in attempts), 59000)
 
 
 if __name__ == "__main__":
