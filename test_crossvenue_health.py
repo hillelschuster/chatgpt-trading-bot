@@ -54,6 +54,8 @@ class HealthTest(unittest.TestCase):
             self.assertEqual(2, result["counts"]["post_freeze_snapshots"])
             self.assertEqual(200, result["progress"]["periods_remaining"])
             self.assertFalse(result["integrity"]["blockers"])
+            self.assertTrue(result["integrity"]["required_data_present"])
+            self.assertTrue(result["integrity"]["required_reports_present"])
 
     def test_complete_rows_count_unique_periods(self):
         with tempfile.TemporaryDirectory() as root:
@@ -63,6 +65,10 @@ class HealthTest(unittest.TestCase):
                  "funding_boundary_ms": cutoff + DAY_MS},
                 {"event_id": "eth", "pnl_status": "complete",
                  "funding_boundary_ms": cutoff + DAY_MS},
+            ])
+            write_jsonl(data / "crossvenue_settled_events.jsonl", [
+                {"event_id": "btc", "settlement_status": "complete"},
+                {"event_id": "eth", "settlement_status": "complete"},
             ])
             result = summarize(data, reports, now_ms=cutoff + 600_000)
             self.assertEqual(2, result["counts"]["complete_pnl_rows"])
@@ -76,6 +82,35 @@ class HealthTest(unittest.TestCase):
             result = summarize(data, reports, now_ms=cutoff + 600_000)
             self.assertEqual("INVALID", result["status"])
             self.assertIn("artifact_chain_invalid", result["integrity"]["blockers"])
+
+    def test_missing_required_report_fails_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            (reports / "crossvenue_chain.json").unlink()
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("required_reports_missing", result["integrity"]["blockers"])
+            self.assertIn("artifact_chain_missing", result["integrity"]["blockers"])
+            self.assertEqual(["crossvenue_chain.json"], result["integrity"]["missing_reports"])
+
+    def test_missing_required_data_fails_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            (data / "crossvenue_events.jsonl").unlink()
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("required_data_missing", result["integrity"]["blockers"])
+            self.assertEqual(["crossvenue_events.jsonl"], result["integrity"]["missing_data"])
+
+    def test_impossible_pnl_settlement_counts_fail_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            write_jsonl(data / "crossvenue_pnl_events.jsonl", [{
+                "event_id": "orphan", "pnl_status": "complete",
+                "funding_boundary_ms": cutoff + DAY_MS}])
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("pnl_settlement_count_inconsistent", result["integrity"]["blockers"])
 
     def test_stale_collection_is_invalid(self):
         with tempfile.TemporaryDirectory() as root:
