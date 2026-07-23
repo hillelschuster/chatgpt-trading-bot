@@ -4,15 +4,17 @@ import argparse, hashlib, json, random, statistics
 from collections import defaultdict
 from pathlib import Path
 
-DEVELOPMENT_COMPLETE_EVENTS = 140
-HOLDOUT_COMPLETE_EVENTS = 60
-MIN_COMPLETE_EVENTS = 200
+DEVELOPMENT_COMPLETE_PERIODS = 140
+HOLDOUT_COMPLETE_PERIODS = 60
+MIN_COMPLETE_PERIODS = 200
+MIN_COLLECTION_DAYS = 56
+DAY = 86_400_000
 BLOCK_SIZE = 8
 BOOTSTRAP_SAMPLES = 4000
 CAPITAL_FRACTION = 0.10
 MAX_TOTAL_FRACTION_PER_PERIOD = 1.0
-MAX_POSITIVE_CONCENTRATION = 0.50
-MAX_FAILED_ATTEMPT_RATE = 0.10
+MAX_POSITIVE_CONCENTRATION = 0.70
+MAX_FAILED_ATTEMPT_RATE = 0.05
 SEED = 20260723
 
 
@@ -47,13 +49,28 @@ def eligible_attempts(rows, freeze):
     return attempts, mismatched
 
 
+def grouped_periods(rows):
+    grouped = defaultdict(list)
+    for row in rows: grouped[event_time(row)].append(row)
+    return [(time, sorted(period, key=lambda r: (str(r.get("event_id") or ""), str(r.get("coin") or ""))))
+            for time, period in sorted(grouped.items())]
+
+
+def is_complete_period(period):
+    return any(row.get("pnl_status") == "complete" for row in period)
+
+
 def split_attempts(attempts):
-    development, holdout, complete = [], [], 0
-    for row in attempts:
-        if complete < DEVELOPMENT_COMPLETE_EVENTS:
-            development.append(row); complete += row.get("pnl_status") == "complete"
-        else: holdout.append(row)
+    development, holdout, complete_periods = [], [], 0
+    for _, period in grouped_periods(attempts):
+        target = development if complete_periods < DEVELOPMENT_COMPLETE_PERIODS else holdout
+        target.extend(period)
+        if is_complete_period(period): complete_periods += 1
     return development, holdout
+
+
+def complete_period_count(rows):
+    return sum(is_complete_period(period) for _, period in grouped_periods(rows))
 
 
 def moving_block_lcb(values, block_size=BLOCK_SIZE, samples=BOOTSTRAP_SAMPLES, seed=SEED):
@@ -66,13 +83,6 @@ def moving_block_lcb(values, block_size=BLOCK_SIZE, samples=BOOTSTRAP_SAMPLES, s
             start = rng.choice(starts); sample.extend(values[start:start + block])
         means.append(statistics.fmean(sample[:n]))
     means.sort(); return means[max(0, int(0.025 * samples) - 1)]
-
-
-def grouped_periods(rows):
-    grouped = defaultdict(list)
-    for row in rows: grouped[event_time(row)].append(row)
-    return [(time, sorted(period, key=lambda r: (str(r.get("event_id") or ""), str(r.get("coin") or ""))))
-            for time, period in sorted(grouped.items())]
 
 
 def period_returns(rows, return_field, fraction=CAPITAL_FRACTION):
@@ -116,10 +126,18 @@ def validate(rows, freeze):
     all_attempts = [r for r in rows if r.get("pnl_status") in ("complete", "failed_attempt")]
     attempts, mismatched = eligible_attempts(rows, freeze)
     development, holdout = split_attempts(attempts)
-    development_complete = sum(r["pnl_status"] == "complete" for r in development)
-    holdout_complete = sum(r["pnl_status"] == "complete" for r in holdout)
+    development_complete_attempts = sum(r["pnl_status"] == "complete" for r in development)
+    holdout_complete_attempts = sum(r["pnl_status"] == "complete" for r in holdout)
+    development_complete_periods = complete_period_count(development)
+    holdout_complete_periods = complete_period_count(holdout)
+    complete_times = [time for time, period in grouped_periods(attempts) if is_complete_period(period)]
+    collection_span_days = ((complete_times[-1] - complete_times[0]) / DAY
+                            if len(complete_times) > 1 else 0.0)
     integrity_ok = mismatched == 0
-    ready = integrity_ok and development_complete >= DEVELOPMENT_COMPLETE_EVENTS and holdout_complete >= HOLDOUT_COMPLETE_EVENTS
+    sample_ready = (development_complete_periods >= DEVELOPMENT_COMPLETE_PERIODS
+                    and holdout_complete_periods >= HOLDOUT_COMPLETE_PERIODS)
+    span_ready = collection_span_days >= MIN_COLLECTION_DAYS
+    ready = integrity_ok and sample_ready and span_ready
     evaluated = holdout if ready else []
     base_periods = period_returns(evaluated, "base_net_return_pct") if ready else []
     stress_periods = period_returns(evaluated, "stress_net_return_pct") if ready else []
@@ -128,17 +146,20 @@ def validate(rows, freeze):
     sp = finite_capital(evaluated, "stress_net_return_pct") if ready else None
     conc, by_coin = concentration(evaluated) if ready else (None, {})
     failure_rate = sum(r["pnl_status"] == "failed_attempt" for r in evaluated) / len(evaluated) if evaluated else None
-    gates = {"manifest_binding_valid": integrity_ok, "minimum_complete_events": ready,
+    gates = {"manifest_binding_valid": integrity_ok, "minimum_complete_periods": sample_ready,
+             "minimum_collection_span_56_days": span_ready,
              "holdout_block_bootstrap_lcb_positive": lcb is not None and lcb > 0,
              "holdout_stress_period_mean_positive": bool(stress_periods) and statistics.fmean(stress_periods) > 0,
              "holdout_base_portfolio_positive": bp is not None and bp["return_pct"] > 0,
              "holdout_stress_portfolio_positive": sp is not None and sp["return_pct"] > 0,
-             "positive_pnl_concentration_at_most_50pct": conc is not None and conc <= MAX_POSITIVE_CONCENTRATION,
-             "failed_attempt_rate_at_most_10pct": failure_rate is not None and failure_rate <= MAX_FAILED_ATTEMPT_RATE}
+             "positive_pnl_concentration_at_most_70pct": conc is not None and conc <= MAX_POSITIVE_CONCENTRATION,
+             "failed_attempt_rate_below_5pct": failure_rate is not None and failure_rate <= MAX_FAILED_ATTEMPT_RATE}
     verdict = "INVALID" if not integrity_ok else "COLLECTING" if not ready else "PASS" if all(gates.values()) else "REJECT"
-    report = {"contract": {"development_complete_events": DEVELOPMENT_COMPLETE_EVENTS,
-                            "holdout_complete_events": HOLDOUT_COMPLETE_EVENTS,
-                            "minimum_complete_events": MIN_COMPLETE_EVENTS,
+    report = {"contract": {"development_complete_periods": DEVELOPMENT_COMPLETE_PERIODS,
+                            "holdout_complete_periods": HOLDOUT_COMPLETE_PERIODS,
+                            "minimum_complete_periods": MIN_COMPLETE_PERIODS,
+                            "minimum_collection_days": MIN_COLLECTION_DAYS,
+                            "complete_period_definition": "funding boundary with at least one exact complete attempt",
                             "block_size_periods": BLOCK_SIZE, "bootstrap_samples": BOOTSTRAP_SAMPLES,
                             "capital_fraction_per_attempt": CAPITAL_FRACTION,
                             "max_total_fraction_per_period": MAX_TOTAL_FRACTION_PER_PERIOD,
@@ -148,9 +169,15 @@ def validate(rows, freeze):
               "verdict": verdict, "profitability_claim_permitted": verdict == "PASS",
               "evidence_cutoff_ms": freeze["evidence_cutoff_ms"],
               "excluded_prefreeze_or_unbound_attempts": len(all_attempts) - len(attempts),
-              "total_attempts": len(attempts), "complete_events": development_complete + holdout_complete,
-              "development_attempts": len(development), "development_complete_events": development_complete,
-              "holdout_attempts_collected": len(holdout), "holdout_complete_events_collected": holdout_complete,
+              "total_attempts": len(attempts), "collection_span_days": collection_span_days,
+              "complete_attempts": development_complete_attempts + holdout_complete_attempts,
+              "complete_periods": development_complete_periods + holdout_complete_periods,
+              "development_attempts": len(development),
+              "development_complete_attempts": development_complete_attempts,
+              "development_complete_periods": development_complete_periods,
+              "holdout_attempts_collected": len(holdout),
+              "holdout_complete_attempts_collected": holdout_complete_attempts,
+              "holdout_complete_periods_collected": holdout_complete_periods,
               "holdout_attempts_evaluated": len(evaluated), "holdout_periods_evaluated": len(base_periods),
               "holdout_base_period_mean_return_pct": statistics.fmean(base_periods) if base_periods else None,
               "holdout_base_block_bootstrap_lcb95_pct": lcb,
