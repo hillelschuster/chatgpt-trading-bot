@@ -31,6 +31,21 @@ Reject a snapshot when either book is missing/crossed, a book timestamp differs 
 - Hold through one funding event, then exit 60 seconds after both venues publish settlement using adverse executable prices.
 - No transfers during a position. Capital is pre-funded 50/50 between venues.
 
+## Frozen event-alignment contract
+
+`crossvenue_events.py` converts schema-v4 snapshots into deterministic event windows without calculating profitability:
+
+- event identity is `(coin, Hyperliquid effective funding boundary, OKX current funding boundary)`;
+- the signal is the latest valid snapshot still at least 10 minutes before the earliest boundary;
+- entry is the first stored snapshot at or after signal plus 60 seconds, with no more than one cadence interval of lag;
+- exit is the first stored snapshot at or after the later venue boundary plus 60 seconds, with no more than one cadence interval of lag;
+- entry uses ask for the long leg and bid for the short leg; exit uses bid for the long leg and ask for the short leg;
+- entry and exit books must be timestamped within five seconds of one another;
+- incomplete future windows remain `pending`; uncoordinated books are `rejected`; neither is silently dropped or forward-filled;
+- predicted funding and direction are frozen from the signal snapshot. Realized funding enrichment and P&L belong to the later evaluator and may not alter event selection.
+
+The builder may run during collection and may report zero complete events. It must not inspect or score the quarantined final period.
+
 ## Costs
 
 Predeclared base case per round trip:
