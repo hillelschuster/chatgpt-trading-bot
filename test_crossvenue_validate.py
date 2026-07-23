@@ -1,15 +1,14 @@
 import unittest
-from crossvenue_validate import finite_capital, moving_block_lcb, validate
+from crossvenue_validate import finite_capital, moving_block_lcb, period_returns, validate
 
 FREEZE = {"schema": "crossvenue-experiment-freeze-v2", "frozen_at_ms": 1,
           "evidence_cutoff_ms": 0, "sha256": "freeze-a"}
 
 
-def row(i, value=.4, stress=.2, coin="BTC", status="complete", digest="freeze-a"):
-    return {"event_id": f"e{i}", "boundary_ms": i * 3_600_000 + 1, "coin": coin,
-            "pnl_status": status, "base_net_return_pct": value,
-            "stress_net_return_pct": stress,
-            "experiment_freeze": {"sha256": digest}}
+def row(i, value=.4, stress=.2, coin="BTC", status="complete", digest="freeze-a", boundary=None):
+    return {"event_id": f"e{i}-{coin}", "boundary_ms": (i if boundary is None else boundary) * 3_600_000 + 1,
+            "coin": coin, "pnl_status": status, "base_net_return_pct": value,
+            "stress_net_return_pct": stress, "experiment_freeze": {"sha256": digest}}
 
 
 class CrossVenueValidateTest(unittest.TestCase):
@@ -62,6 +61,22 @@ class CrossVenueValidateTest(unittest.TestCase):
         self.assertEqual(moving_block_lcb(values), moving_block_lcb(values))
         result = finite_capital([row(0, value=10), row(1, value=-10)], "base_net_return_pct")
         self.assertAlmostEqual(9999.0, result["ending_equity"])
+
+    def test_same_boundary_is_one_order_independent_portfolio_period(self):
+        rows = [row(0, value=10, coin="BTC", boundary=0), row(1, value=-10, coin="ETH", boundary=0)]
+        reverse = list(reversed(rows))
+        self.assertEqual([0.0], period_returns(rows, "base_net_return_pct"))
+        first = finite_capital(rows, "base_net_return_pct")
+        second = finite_capital(reverse, "base_net_return_pct")
+        self.assertEqual(1, first["periods"])
+        self.assertAlmostEqual(10_000, first["ending_equity"])
+        self.assertEqual(first["ending_equity"], second["ending_equity"])
+        self.assertEqual(first["ledger"][0]["notional"], first["ledger"][1]["notional"])
+
+    def test_rejects_impossible_simultaneous_capital_allocation(self):
+        rows = [row(i, boundary=0) for i in range(11)]
+        with self.assertRaises(ValueError):
+            finite_capital(rows, "base_net_return_pct")
 
 
 if __name__ == "__main__": unittest.main()
