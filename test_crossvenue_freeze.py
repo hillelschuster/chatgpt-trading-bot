@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from crossvenue_freeze import SCHEMA, verify_or_create
+from crossvenue_freeze import DEFAULT_FILES, SCHEMA, verify_or_create
 from crossvenue_validate import validate
 
 
@@ -64,6 +64,22 @@ class CrossVenueFreezeTest(unittest.TestCase):
             source.write_text("v2\n")
             with self.assertRaises(ValueError):
                 verify_or_create(path, (source,), (evidence,), now_ms=9, allow_safe_upgrade=True)
+
+    def test_authoritative_coverage_and_promotion_logic_are_frozen(self):
+        self.assertIn("crossvenue_coverage.py", DEFAULT_FILES)
+        self.assertIn("crossvenue_promote.py", DEFAULT_FILES)
+
+    def test_newly_added_contract_file_forces_safe_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "validation.py"; first.write_text("v1\n")
+            added = root / "promotion.py"; added.write_text("v1\n")
+            manifest_path = root / "freeze.json"
+            verify_or_create(manifest_path, (first,), (), now_ms=1)
+            manifest, upgraded = verify_or_create(
+                manifest_path, (first, added), (), now_ms=2, allow_safe_upgrade=True)
+            self.assertTrue(upgraded)
+            self.assertEqual({str(first), str(added)}, set(manifest["files"]))
 
     def test_validation_excludes_all_prefreeze_attempts(self):
         rows = [pnl_row(i) for i in range(260)]
