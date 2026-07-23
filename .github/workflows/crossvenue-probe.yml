@@ -13,11 +13,13 @@ on:
       - "crossvenue_settlements.py"
       - "crossvenue_chain.py"
       - "crossvenue_pnl.py"
+      - "crossvenue_validate.py"
       - "test_crossvenue_snapshot.py"
       - "test_crossvenue_events.py"
       - "test_crossvenue_settlements.py"
       - "test_crossvenue_chain.py"
       - "test_crossvenue_pnl.py"
+      - "test_crossvenue_validate.py"
       - "CROSS_VENUE_EXPERIMENT.md"
       - ".github/workflows/crossvenue-probe.yml"
 
@@ -42,12 +44,14 @@ jobs:
           python -m unittest -v test_crossvenue_snapshot.py
           test_crossvenue_events.py test_crossvenue_settlements.py
           test_crossvenue_chain.py test_crossvenue_pnl.py
+          test_crossvenue_validate.py
       - run: >-
           python -m py_compile crossvenue_snapshot.py crossvenue_events.py
           crossvenue_settlements.py crossvenue_chain.py crossvenue_pnl.py
-          test_crossvenue_snapshot.py test_crossvenue_events.py
-          test_crossvenue_settlements.py test_crossvenue_chain.py
-          test_crossvenue_pnl.py
+          crossvenue_validate.py test_crossvenue_snapshot.py
+          test_crossvenue_events.py test_crossvenue_settlements.py
+          test_crossvenue_chain.py test_crossvenue_pnl.py
+          test_crossvenue_validate.py
       - name: Restore latest prospective series
         if: github.event_name != 'pull_request'
         env:
@@ -87,6 +91,12 @@ jobs:
           python crossvenue_pnl.py data/crossvenue_settled_events.jsonl
           --out data/crossvenue_pnl_events.jsonl
           --report reports/crossvenue_pnl.json
+      - name: Run frozen prospective validation gate
+        run: >-
+          python crossvenue_validate.py data/crossvenue_pnl_events.jsonl
+          --report reports/crossvenue_validation.json
+          --base-ledger data/crossvenue_validation_base_ledger.jsonl
+          --stress-ledger data/crossvenue_validation_stress_ledger.jsonl
       - name: Verify append-only artifact chain
         run: |
           args=()
@@ -103,10 +113,13 @@ jobs:
             data/crossvenue_events.jsonl
             data/crossvenue_settled_events.jsonl
             data/crossvenue_pnl_events.jsonl
+            data/crossvenue_validation_base_ledger.jsonl
+            data/crossvenue_validation_stress_ledger.jsonl
             reports/crossvenue_continuity.json
             reports/crossvenue_events.json
             reports/crossvenue_settlements.json
             reports/crossvenue_pnl.json
+            reports/crossvenue_validation.json
             reports/crossvenue_chain.json
           retention-days: 90
           if-no-files-found: warn
