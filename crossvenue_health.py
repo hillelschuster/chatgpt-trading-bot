@@ -11,6 +11,20 @@ MIN_DAYS = 56
 STALE_MULTIPLIER = 3
 CADENCE_MS = 300_000
 
+REQUIRED_DATA = (
+    "crossvenue_experiment_freeze.json",
+    "crossvenue_snapshots.jsonl",
+    "crossvenue_events.jsonl",
+    "crossvenue_settled_events.jsonl",
+    "crossvenue_pnl_events.jsonl",
+)
+REQUIRED_REPORTS = (
+    "crossvenue_chain.json",
+    "crossvenue_coverage.json",
+    "crossvenue_validation.json",
+    "crossvenue_promotion.json",
+)
+
 
 def read_json(path, default=None):
     target = Path(path)
@@ -45,9 +59,16 @@ def unique_periods(rows):
     return len(keys)
 
 
+def missing_files(root, names):
+    return [name for name in names if not (Path(root) / name).is_file()]
+
+
 def summarize(data_dir, reports_dir, now_ms=None):
     data_dir, reports_dir = Path(data_dir), Path(reports_dir)
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+    missing_data = missing_files(data_dir, REQUIRED_DATA)
+    missing_reports = missing_files(reports_dir, REQUIRED_REPORTS)
+
     manifest = read_json(data_dir / "crossvenue_experiment_freeze.json", {}) or {}
     snapshots = read_jsonl(data_dir / "crossvenue_snapshots.jsonl")
     events = read_jsonl(data_dir / "crossvenue_events.jsonl")
@@ -69,9 +90,15 @@ def summarize(data_dir, reports_dir, now_ms=None):
     span_days = float(coverage.get("collection_span_days") or 0)
 
     blockers = []
+    if missing_data:
+        blockers.append("required_data_missing")
+    if missing_reports:
+        blockers.append("required_reports_missing")
     if not manifest:
         blockers.append("freeze_manifest_missing")
-    if chain and not chain.get("valid", False):
+    if not chain:
+        blockers.append("artifact_chain_missing")
+    elif not chain.get("valid", False):
         blockers.append("artifact_chain_invalid")
     if stale:
         blockers.append("collection_stale")
@@ -79,6 +106,12 @@ def summarize(data_dir, reports_dir, now_ms=None):
         blockers.append("snapshot_duplicates")
     if validation.get("status") == "INVALID":
         blockers.append("validation_invalid")
+    if promotion.get("status") == "INVALID":
+        blockers.append("promotion_invalid")
+    if complete_pnl > complete_settlements:
+        blockers.append("pnl_settlement_count_inconsistent")
+    if complete_periods > complete_pnl:
+        blockers.append("period_count_inconsistent")
 
     periods_remaining = max(0, MIN_PERIODS - complete_periods)
     days_remaining = max(0.0, MIN_DAYS - span_days)
@@ -108,7 +141,10 @@ def summarize(data_dir, reports_dir, now_ms=None):
                        "stale_minutes": stale_minutes, "slot_coverage": coverage.get("slot_coverage"),
                        "complete_slot_coverage": coverage.get("complete_slot_coverage"),
                        "event_accounting": coverage.get("event_accounting")},
-        "integrity": {"chain_present": bool(chain), "chain_valid": chain.get("valid"),
+        "integrity": {"required_data_present": not missing_data,
+                      "required_reports_present": not missing_reports,
+                      "missing_data": missing_data, "missing_reports": missing_reports,
+                      "chain_present": bool(chain), "chain_valid": chain.get("valid"),
                       "chain_errors": chain.get("errors", []), "blockers": blockers},
         "progress": {"minimum_periods": MIN_PERIODS, "periods_remaining": periods_remaining,
                      "minimum_days": MIN_DAYS, "days_remaining": days_remaining},
