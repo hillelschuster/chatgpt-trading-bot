@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore only a completed successful prospective artifact from GitHub Actions."""
+"""Restore only a completed successful prospective artifact from the approved workflow."""
 import argparse
 import json
 import os
@@ -10,8 +10,20 @@ from pathlib import Path
 ALLOWED_EVENTS = {"schedule", "workflow_dispatch"}
 
 
-def choose_artifact(artifacts, runs):
-    """Return newest non-expired artifact whose producing run completed successfully."""
+def run_is_approved(run, branch=None, workflow_path=None):
+    """Require a successful approved event and, when configured, exact provenance."""
+    if not (run.get("status") == "completed" and run.get("conclusion") == "success"
+            and run.get("event") in ALLOWED_EVENTS):
+        return False
+    if branch and run.get("head_branch") != branch:
+        return False
+    if workflow_path and run.get("path") != workflow_path:
+        return False
+    return True
+
+
+def choose_artifact(artifacts, runs, branch=None, workflow_path=None):
+    """Return newest non-expired artifact produced by an approved workflow run."""
     ordered = sorted(
         (a for a in artifacts if not a.get("expired")),
         key=lambda a: (a.get("created_at") or "", int(a.get("id") or 0)),
@@ -20,8 +32,7 @@ def choose_artifact(artifacts, runs):
     for artifact in ordered:
         run_id = int((artifact.get("workflow_run") or {}).get("id") or 0)
         run = runs.get(run_id) or {}
-        if (run.get("status") == "completed" and run.get("conclusion") == "success"
-                and run.get("event") in ALLOWED_EVENTS):
+        if run_is_approved(run, branch, workflow_path):
             return artifact
     return None
 
@@ -48,7 +59,7 @@ def download(url, token, path):
         Path(path).write_bytes(response.read())
 
 
-def find(repository, artifact_name, token, max_pages=10):
+def find(repository, artifact_name, token, max_pages=10, branch=None, workflow_path=None):
     base = f"https://api.github.com/repos/{repository}"
     for page in range(1, max_pages + 1):
         payload = request_json(
@@ -66,7 +77,7 @@ def find(repository, artifact_name, token, max_pages=10):
                 run = request_json(f"{base}/actions/runs/{run_id}", token)
             except urllib.error.HTTPError:
                 continue
-            if choose_artifact([artifact], {run_id: run}):
+            if choose_artifact([artifact], {run_id: run}, branch, workflow_path):
                 return artifact
         if len(payload.get("artifacts") or []) < 100:
             break
@@ -77,17 +88,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--artifact-name", default="crossvenue-series")
+    parser.add_argument("--branch", default="main")
+    parser.add_argument("--workflow-path", default=".github/workflows/crossvenue-probe.yml")
     parser.add_argument("--out", required=True)
     parser.add_argument("--token", default=os.environ.get("GH_TOKEN"))
     parser.add_argument("--required", action="store_true")
     args = parser.parse_args()
     if not args.token:
         raise SystemExit("GitHub token missing")
-    artifact = find(args.repository, args.artifact_name, args.token)
+    artifact = find(args.repository, args.artifact_name, args.token,
+                    branch=args.branch, workflow_path=args.workflow_path)
     if not artifact:
         if args.required:
-            raise SystemExit("no completed successful prospective artifact found")
-        print(json.dumps({"status": "not_found", "artifact_name": args.artifact_name}))
+            raise SystemExit("no approved completed successful prospective artifact found")
+        print(json.dumps({"status": "not_found", "artifact_name": args.artifact_name,
+                          "branch": args.branch, "workflow_path": args.workflow_path}))
         return
     download(artifact["archive_download_url"], args.token, args.out)
     print(json.dumps({
@@ -95,6 +110,8 @@ def main():
         "artifact_id": artifact["id"],
         "workflow_run_id": (artifact.get("workflow_run") or {}).get("id"),
         "created_at": artifact.get("created_at"),
+        "branch": args.branch,
+        "workflow_path": args.workflow_path,
         "out": args.out,
     }))
 
