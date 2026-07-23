@@ -21,14 +21,21 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_events.py` builds deterministic candidate event windows from the prospective series. It freezes the last signal at least ten minutes before funding, applies a 60-second delayed entry, uses adverse bid/ask prices, requires five-second two-book coordination, preserves pending windows, and does not calculate returns or inspect a final holdout.
 
+`crossvenue_settlements.py` joins complete windows to exact venue-published realized funding. Restored observations are monotonic: completed settlements are never refetched or downgraded, partial venue observations are retained, only missing legs are queried, duplicate boundaries share one API request, and transient endpoint failures remain explicit pending evidence rather than destroying the artifact chain.
+
 ```bash
-python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py
+python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py \
+  test_crossvenue_settlements.py
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl --audit-only
 python crossvenue_events.py data/crossvenue_snapshots.jsonl \
   --out data/crossvenue_events.jsonl --report reports/crossvenue_events.json
+python crossvenue_settlements.py data/crossvenue_events.jsonl \
+  --existing data/crossvenue_settled_events.jsonl \
+  --out data/crossvenue_settled_events.jsonl \
+  --report reports/crossvenue_settlements.json
 ```
 
 The frozen promotion gate requires a positive quarantined-period block-bootstrap LCB95, positive stress-cost and finite-capital returns, controlled drawdown/concentration, low two-leg failure rate, and clean timestamp/data validation. Passing permits shadow signals only, not orders.
