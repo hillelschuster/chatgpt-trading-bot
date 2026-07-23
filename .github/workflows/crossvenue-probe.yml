@@ -1,7 +1,9 @@
-name: crossvenue-probe
+name: crossvenue-series
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
   pull_request:
     branches: [main]
     paths:
@@ -12,14 +14,15 @@ on:
       - ".github/workflows/crossvenue-probe.yml"
 
 concurrency:
-  group: crossvenue-probe
+  group: crossvenue-series
   cancel-in-progress: false
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  probe:
+  collect:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -29,12 +32,29 @@ jobs:
           python-version: "3.12"
       - run: python -m unittest -v test_crossvenue_snapshot.py
       - run: python -m py_compile crossvenue_snapshot.py test_crossvenue_snapshot.py
-      - name: Collect one live BTC/ETH snapshot
-        run: python crossvenue_snapshot.py --coins BTC,ETH --out reports/crossvenue_probe.jsonl
+      - name: Restore latest prospective series
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p data
+          artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=crossvenue-series&per_page=100" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .id // empty')
+          if [ -n "$artifact_id" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/previous.zip
+            unzip -o /tmp/previous.zip -d .
+          fi
+      - name: Collect and audit one BTC/ETH cadence slot
+        run: |
+          mkdir -p data reports
+          python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
+            --out data/crossvenue_snapshots.jsonl > reports/crossvenue_continuity.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: crossvenue-probe-${{ github.run_id }}
-          path: reports/crossvenue_probe.jsonl
-          retention-days: 14
+          name: ${{ github.event_name == 'pull_request' && format('crossvenue-probe-{0}', github.run_id) || 'crossvenue-series' }}
+          path: |
+            data/crossvenue_snapshots.jsonl
+            reports/crossvenue_continuity.json
+          retention-days: 90
           if-no-files-found: warn
