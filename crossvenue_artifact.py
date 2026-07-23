@@ -48,20 +48,29 @@ def download(url, token, path):
         Path(path).write_bytes(response.read())
 
 
-def find(repository, artifact_name, token):
+def find(repository, artifact_name, token, max_pages=10):
     base = f"https://api.github.com/repos/{repository}"
-    payload = request_json(
-        f"{base}/actions/artifacts?name={artifact_name}&per_page=100", token)
-    artifacts = payload.get("artifacts") or []
-    runs = {}
-    for artifact in artifacts:
-        run_id = int((artifact.get("workflow_run") or {}).get("id") or 0)
-        if run_id and run_id not in runs:
+    for page in range(1, max_pages + 1):
+        payload = request_json(
+            f"{base}/actions/artifacts?name={artifact_name}&per_page=100&page={page}", token)
+        artifacts = sorted(
+            (a for a in payload.get("artifacts") or [] if not a.get("expired")),
+            key=lambda a: (a.get("created_at") or "", int(a.get("id") or 0)),
+            reverse=True,
+        )
+        for artifact in artifacts:
+            run_id = int((artifact.get("workflow_run") or {}).get("id") or 0)
+            if not run_id:
+                continue
             try:
-                runs[run_id] = request_json(f"{base}/actions/runs/{run_id}", token)
+                run = request_json(f"{base}/actions/runs/{run_id}", token)
             except urllib.error.HTTPError:
-                runs[run_id] = {}
-    return choose_artifact(artifacts, runs)
+                continue
+            if choose_artifact([artifact], {run_id: run}):
+                return artifact
+        if len(payload.get("artifacts") or []) < 100:
+            break
+    return None
 
 
 def main():
