@@ -99,6 +99,7 @@ jobs:
       - name: Compute frozen non-inferential two-leg P&L
         run: >-
           python crossvenue_pnl.py data/crossvenue_settled_events.jsonl
+          --freeze-manifest data/crossvenue_experiment_freeze.json
           --out data/crossvenue_pnl_events.jsonl
           --report reports/crossvenue_pnl.json
       - name: Run frozen prospective validation gate
