@@ -50,13 +50,25 @@ The builder may run during collection and may report zero complete events. It mu
 
 Predeclared base case per round trip:
 
-- each venue: taker fee from the documented base/user tier, never optimized;
+- Hyperliquid base-tier perp taker fee: 4.5 bps per fill-side notional;
+- OKX Lv1 USDT perpetual taker fee: 5 bps per fill-side notional;
 - slippage: 2 bps per fill per leg;
 - one-leg failure reserve: 10 bps on affected notional;
 - rebalancing reserve: 2 bps per completed trade across total capital;
 - actual funding cash flows on both legs.
 
-Stress case doubles slippage and applies the higher applicable taker fee. Maker assumptions are forbidden in v1.
+With equal notionals and total capital defined as the sum of both venue allocations, base completed-trade fixed cost is 15.5 bps: 9.5 bps round-trip taker fees, 4 bps four-fill slippage and 2 bps rebalancing. Stress cost is 20 bps: 5 bps taker on each venue, 4 bps slippage per fill and the same 2 bps rebalancing. Maker assumptions are forbidden in v1.
+
+## Frozen P&L contract
+
+`crossvenue_pnl.py` is deterministic and may consume only events with complete coordinated entry/exit books and exact realized funding from both venues.
+
+- Each leg receives 50% of total capital; price and funding returns are weighted on total capital.
+- Positive funding means longs pay shorts. Funding signs follow the frozen long/short venue direction.
+- Pending events are not scored. Structurally invalid complete events fail closed as `invalid`.
+- Rejected two-book attempts are retained and charged 5 bps of total capital, equal to the 10 bps reserve on one half-capital leg.
+- Base and stress costs are fixed constants, never optimized.
+- Event-level output and aggregate diagnostics may accumulate during collection, but `profitability_claim_permitted` remains false. Formal inference belongs to the frozen validation stage after the minimum sample is reached.
 
 ## Evaluation
 
@@ -83,6 +95,8 @@ Missing five-minute cadence slots reduce sample size and are reported; they are 
 ## Official API basis
 
 - Hyperliquid public `info`: `predictedFundings`, `metaAndAssetCtxs`, `l2Book`, and historical `fundingHistory`; official funding documentation states that funding is paid every hour.
+- Hyperliquid official fee schedule: base-tier perp taker rate 0.045%.
 - OKX public APIs: `/api/v5/market/ticker`, `/api/v5/market/books`, `/api/v5/public/funding-rate`, and funding-rate history for swap instruments. OKX `method=current_period` identifies `fundingRate` as the current-period rate.
+- OKX official contract fee documentation: Lv1 USDT perpetual taker rate 0.05%.
 
 The collector preserves raw timing and funding fields because venue semantics can change. Any schema change invalidates collection until reviewed.
