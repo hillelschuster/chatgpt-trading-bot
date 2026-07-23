@@ -22,16 +22,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m unittest -v test_crossvenue_health.py
-      - run: python -m py_compile crossvenue_health.py test_crossvenue_health.py
-      - name: Download latest prospective artifact
+      - run: >-
+          python -m unittest -v test_crossvenue_health.py
+          test_crossvenue_artifact.py
+      - run: >-
+          python -m py_compile crossvenue_health.py test_crossvenue_health.py
+          crossvenue_artifact.py test_crossvenue_artifact.py
+      - name: Download latest successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=crossvenue-series&per_page=100" \
-            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .id // empty')
-          test -n "$artifact_id" || { echo "crossvenue-series artifact missing"; exit 1; }
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/series.zip
+          python crossvenue_artifact.py --repository "$GITHUB_REPOSITORY" \
+            --artifact-name crossvenue-series --out /tmp/series.zip --required
           unzip -o /tmp/series.zip -d .
       - name: Summarize evidence health
         run: python crossvenue_health.py --out reports/crossvenue_health.json
