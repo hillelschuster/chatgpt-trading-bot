@@ -29,7 +29,7 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_freeze.py` hashes the experiment specification and all signal, collection, settlement, P&L, and validation logic. The first persistent run records the latest existing evidence timestamp as a cutoff. Later scheduled runs fail closed if any frozen file changes. Only attempts strictly after that cutoff are eligible for promotion, so code developed while observing earlier rows cannot claim them as prospective evidence.
 
-`crossvenue_validate.py` uses a fixed, non-moving partition by synchronized funding period: the first 140 post-freeze complete periods plus intervening failed attempts are development; all later periods are holdout. A complete period is one funding boundary with at least one exact complete attempt, so simultaneous BTC/ETH attempts never count as independent samples. Holdout metrics and ledgers remain suppressed until 60 complete holdout periods and at least 56 elapsed collection days exist. Every simultaneous attempt sizes from the same pre-period equity, same-time returns are aggregated before compounding, and block-bootstrap inference operates on period returns. Promotion then enforces the frozen 70% positive-P&L concentration ceiling and below-5% failed-attempt rate, plus bootstrap, stress and finite-capital gates.
+`crossvenue_validate.py` uses a fixed, non-moving partition by synchronized funding period: the first 140 post-freeze complete periods plus intervening failed attempts are development; all later periods are holdout. A complete period is one funding boundary with at least one exact complete attempt, so simultaneous BTC/ETH attempts never count as independent samples. Holdout metrics and ledgers remain suppressed until 60 complete holdout periods and at least 56 elapsed collection days exist. Every simultaneous attempt sizes from the same pre-period equity, same-time returns are aggregated before compounding, and block-bootstrap inference operates on period returns. Promotion also requires a valid append-only chain report from the same run; missing or invalid chain evidence makes the study `INVALID` before any holdout metric is exposed. The remaining gates enforce the frozen 70% positive-P&L concentration ceiling and below-5% failed-attempt rate, plus bootstrap, stress and finite-capital requirements.
 
 ```bash
 python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py \
@@ -46,9 +46,10 @@ python crossvenue_settlements.py data/crossvenue_events.jsonl \
 python crossvenue_pnl.py data/crossvenue_settled_events.jsonl \
   --out data/crossvenue_pnl_events.jsonl --report reports/crossvenue_pnl.json
 python crossvenue_freeze.py --evidence data/crossvenue_pnl_events.jsonl
-python crossvenue_validate.py data/crossvenue_pnl_events.jsonl
 python crossvenue_chain.py --previous-dir /tmp/crossvenue-prior \
   --current-dir data --report reports/crossvenue_chain.json
+python crossvenue_validate.py data/crossvenue_pnl_events.jsonl \
+  --chain-report reports/crossvenue_chain.json
 ```
 
 Passing the promotion gate permits shadow signals only, not orders.
