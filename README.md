@@ -27,13 +27,16 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_pnl.py` applies the frozen two-leg accounting contract only to exact settled events. Base costs are 4.5 bps Hyperliquid taker, 5 bps OKX taker, 2 bps slippage per fill and 2 bps rebalancing across total capital, for a 15.5 bps total-capital reserve. Stress cost is 20 bps. Rejected coordinated attempts receive the predeclared one-leg unwind reserve. Pending or invalid events are never scored, and the report forbids profitability inference before 200 exact settled events.
 
+`crossvenue_freeze.py` hashes the experiment specification and all signal, collection, settlement, P&L, and validation logic. The first persistent run records the latest existing evidence timestamp as a cutoff. Later scheduled runs fail closed if any frozen file changes. Only attempts strictly after that cutoff are eligible for promotion, so code developed while observing earlier rows cannot claim them as prospective evidence.
+
+`crossvenue_validate.py` uses a fixed, non-moving partition: the first 140 post-freeze complete events plus intervening failed attempts are development; all later attempts are holdout. Holdout metrics and ledgers remain suppressed until 60 complete holdout events exist. Promotion then requires the frozen bootstrap, stress, finite-capital, concentration, and failure-rate gates.
+
 ```bash
 python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py \
-  test_crossvenue_settlements.py test_crossvenue_chain.py test_crossvenue_pnl.py
+  test_crossvenue_settlements.py test_crossvenue_chain.py test_crossvenue_pnl.py \
+  test_crossvenue_freeze.py test_crossvenue_validate.py
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl
-python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
-  --out data/crossvenue_snapshots.jsonl --audit-only
 python crossvenue_events.py data/crossvenue_snapshots.jsonl \
   --out data/crossvenue_events.jsonl --report reports/crossvenue_events.json
 python crossvenue_settlements.py data/crossvenue_events.jsonl \
@@ -42,11 +45,13 @@ python crossvenue_settlements.py data/crossvenue_events.jsonl \
   --report reports/crossvenue_settlements.json
 python crossvenue_pnl.py data/crossvenue_settled_events.jsonl \
   --out data/crossvenue_pnl_events.jsonl --report reports/crossvenue_pnl.json
+python crossvenue_freeze.py --evidence data/crossvenue_pnl_events.jsonl
+python crossvenue_validate.py data/crossvenue_pnl_events.jsonl
 python crossvenue_chain.py --previous-dir /tmp/crossvenue-prior \
   --current-dir data --report reports/crossvenue_chain.json
 ```
 
-The frozen promotion gate requires a positive quarantined-period block-bootstrap LCB95, positive stress-cost and finite-capital returns, controlled drawdown/concentration, low two-leg failure rate, and clean timestamp/data validation. Passing permits shadow signals only, not orders.
+Passing the promotion gate permits shadow signals only, not orders.
 
 ## Retired research pipeline
 
