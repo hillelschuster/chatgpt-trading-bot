@@ -11,6 +11,11 @@ def write(path, rows):
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value))
+
+
 def snapshot(slot=0, coin="BTC"):
     return {"cadence_slot_ms": slot, "coin": coin, "value": slot + 1}
 
@@ -34,6 +39,19 @@ def settlement(status="pending", observation=None, attempts=1):
     }
 
 
+def manifest(schema="v2", frozen=100, cutoff=0):
+    return {"schema": schema, "frozen_at_ms": frozen, "evidence_cutoff_ms": cutoff,
+            "files": {"crossvenue_pnl.py": "abc"}}
+
+
+def pnl(status="pending", freeze=None, value=None):
+    row = {**event("complete"), "pnl_status": status,
+           "experiment_freeze": freeze or {"sha256": "abc"}}
+    if value is not None:
+        row["base_net_return_pct"] = value
+    return row
+
+
 class ChainTest(unittest.TestCase):
     def dirs(self):
         root = tempfile.TemporaryDirectory()
@@ -41,6 +59,8 @@ class ChainTest(unittest.TestCase):
 
     def test_append_and_pending_transition_are_valid(self):
         root, old, new = self.dirs()
+        write_json(old / "crossvenue_experiment_freeze.json", manifest())
+        write_json(new / "crossvenue_experiment_freeze.json", manifest())
         write(old / "crossvenue_snapshots.jsonl", [snapshot()])
         write(new / "crossvenue_snapshots.jsonl", [snapshot(), snapshot(300)])
         write(old / "crossvenue_events.jsonl", [event("pending")])
@@ -51,10 +71,13 @@ class ChainTest(unittest.TestCase):
             {**settlement("complete", obs, 2),
              "settlement_observations": {"hyperliquid": obs,
                                          "okx_swap": {"time_ms": 200, "rate": .002}}}])
+        write(old / "crossvenue_pnl_events.jsonl", [pnl("pending")])
+        write(new / "crossvenue_pnl_events.jsonl", [pnl("complete", value=.1)])
         report = audit(old, new, True)
         self.assertTrue(report["valid"])
         self.assertEqual(1, report["new_snapshots"])
         self.assertEqual(1, report["newly_settled"])
+        self.assertEqual(1, report["newly_scored"])
         root.cleanup()
 
     def test_removed_snapshot_fails(self):
@@ -75,6 +98,38 @@ class ChainTest(unittest.TestCase):
         report = audit(old, new)
         self.assertIn("settlement_observation_changed:BTC:100:200:hyperliquid",
                       report["errors"])
+        root.cleanup()
+
+    def test_terminal_pnl_cannot_be_removed_or_changed(self):
+        root, old, new = self.dirs()
+        old_row = pnl("complete", value=.1)
+        write(old / "crossvenue_pnl_events.jsonl", [old_row])
+        write(new / "crossvenue_pnl_events.jsonl", [{**old_row, "base_net_return_pct": 9}])
+        report = audit(old, new)
+        self.assertIn("pnl_terminal_changed:BTC:100:200:complete:complete", report["errors"])
+        write(new / "crossvenue_pnl_events.jsonl", [])
+        self.assertIn("pnl_removed:BTC:100:200", audit(old, new)["errors"])
+        root.cleanup()
+
+    def test_freeze_change_fails_after_complete_pnl(self):
+        root, old, new = self.dirs()
+        write_json(old / "crossvenue_experiment_freeze.json", manifest("v1", 100, 10))
+        write_json(new / "crossvenue_experiment_freeze.json", manifest("v2", 200, 20))
+        write(old / "crossvenue_pnl_events.jsonl", [pnl("complete", value=.1)])
+        write(new / "crossvenue_pnl_events.jsonl", [pnl("complete", value=.1)])
+        report = audit(old, new)
+        self.assertIn("freeze_manifest_mutated", report["errors"])
+        root.cleanup()
+
+    def test_safe_pre_evidence_freeze_upgrade_is_reported(self):
+        root, old, new = self.dirs()
+        write_json(old / "crossvenue_experiment_freeze.json", manifest("v1", 100, 10))
+        write_json(new / "crossvenue_experiment_freeze.json", manifest("v2", 200, 20))
+        write(old / "crossvenue_pnl_events.jsonl", [pnl("pending")])
+        write(new / "crossvenue_pnl_events.jsonl", [pnl("pending", {"sha256": "new"})])
+        report = audit(old, new)
+        self.assertTrue(report["valid"])
+        self.assertTrue(report["freeze_manifest_upgraded"])
         root.cleanup()
 
     def test_scheduled_run_can_require_restored_artifact(self):
