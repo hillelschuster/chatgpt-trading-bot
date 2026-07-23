@@ -28,12 +28,14 @@ jobs:
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_artifact.py test_crossvenue_artifact.py
-      - name: Download latest successful prospective artifact
+      - name: Download latest approved successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python crossvenue_artifact.py --repository "$GITHUB_REPOSITORY" \
-            --artifact-name crossvenue-series --out /tmp/series.zip --required
+            --artifact-name crossvenue-series --branch main \
+            --workflow-path .github/workflows/crossvenue-probe.yml \
+            --out /tmp/series.zip --required
           unzip -o /tmp/series.zip -d .
       - name: Summarize evidence health
         run: python crossvenue_health.py --out reports/crossvenue_health.json
