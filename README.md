@@ -15,13 +15,16 @@ Corrected fixed-universe 180-day run `29949365810` used eleven assets with compl
 
 `CROSS_VENUE_EXPERIMENT.md` freezes a prospective BTC/ETH funding/basis experiment using Hyperliquid and OKX public data. It collects only pre-entry predictions/current-period funding and executable books; historical realized funding is not treated as a historical prediction.
 
-Live Actions probe `29966052184` verified the schema-v3 collector and produced valid BTC/ETH rows. Binance USD-M and Bybit were rejected for GitHub-hosted collection after reproducible HTTP 451 and HTTP 403 responses; no proxy workaround is used.
+Live Actions probe `29966052184` verified the original collector and produced valid BTC/ETH rows. Binance USD-M and Bybit were rejected for GitHub-hosted collection after reproducible HTTP 451 and HTTP 403 responses; no proxy workaround is used.
 
-The collector is not yet scheduled continuously. Hyperliquid's live `nextFundingTime` value lagged the capture timestamp in the first artifact, so its effective funding-boundary semantics must be normalized and tested before prospective accumulation begins. **No profitability inference is permitted from the probe.**
+Schema v4 preserves Hyperliquid's reported funding boundary and derives a strictly future effective boundary from its documented hourly interval when the reported value is stale. The collector runs every five minutes, restores the latest artifact, resumes by unique `(cadence_slot_ms, coin)` keys, and publishes continuity diagnostics. Missing schedule slots remain explicit gaps; they are never backfilled from future observations. **No profitability inference is permitted during collection.**
 
 ```bash
 python -m unittest -v test_crossvenue_snapshot.py
-python crossvenue_snapshot.py --coins BTC,ETH --out data/crossvenue_snapshots.jsonl
+python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
+  --out data/crossvenue_snapshots.jsonl
+python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
+  --out data/crossvenue_snapshots.jsonl --audit-only
 ```
 
 The frozen promotion gate requires a positive quarantined-period block-bootstrap LCB95, positive stress-cost and finite-capital returns, controlled drawdown/concentration, low two-leg failure rate, and clean timestamp/data validation. Passing permits shadow signals only, not orders.
