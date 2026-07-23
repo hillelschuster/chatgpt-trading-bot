@@ -29,7 +29,7 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_freeze.py` hashes the experiment specification and all signal, collection, settlement, P&L, and validation logic. The first persistent run records the latest existing evidence timestamp as a cutoff. Later scheduled runs fail closed if any frozen file changes. Only attempts strictly after that cutoff are eligible for promotion, so code developed while observing earlier rows cannot claim them as prospective evidence.
 
-`crossvenue_validate.py` uses a fixed, non-moving partition: the first 140 post-freeze complete events plus intervening failed attempts are development; all later attempts are holdout. Holdout metrics and ledgers remain suppressed until 60 complete holdout events exist. Promotion then requires the frozen bootstrap, stress, finite-capital, concentration, and failure-rate gates.
+`crossvenue_validate.py` uses a fixed, non-moving partition: the first 140 post-freeze complete events plus intervening failed attempts are development; all later attempts are holdout. Holdout metrics and ledgers remain suppressed until 60 complete holdout events exist. Simultaneous BTC/ETH attempts are evaluated as one synchronized portfolio period: every attempt sizes from the same pre-period equity, same-time returns are aggregated before compounding, and block-bootstrap inference operates on period returns rather than treating correlated venue boundaries as sequential independent trades. Promotion then requires the frozen bootstrap, stress, finite-capital, concentration, and failure-rate gates.
 
 ```bash
 python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py \
