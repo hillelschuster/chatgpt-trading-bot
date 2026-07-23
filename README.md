@@ -31,14 +31,18 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_validate.py` uses a fixed, non-moving partition by synchronized funding period: the first 140 post-freeze complete periods plus intervening failed attempts are development; all later periods are holdout. A complete period is one funding boundary with at least one exact complete attempt, so simultaneous BTC/ETH attempts never count as independent samples. Holdout metrics and ledgers remain suppressed until 60 complete holdout periods and at least 56 elapsed collection days exist. Every simultaneous attempt sizes from the same pre-period equity, same-time returns are aggregated before compounding, and block-bootstrap inference operates on period returns. Promotion also requires a valid append-only chain report from the same run; missing or invalid chain evidence makes the study `INVALID` before any holdout metric is exposed. The remaining gates enforce the frozen 70% positive-P&L concentration ceiling and below-5% failed-attempt rate, plus bootstrap, stress and finite-capital requirements.
 
+`crossvenue_coverage.py` prevents outage-driven selection bias. After the freeze cutoff it requires at least 95% of expected five-minute coin-slots, at least 95% fully synchronized BTC/ETH slots, no duplicate coin-slot rows, and an event record for every funding opportunity observed with the required signal lead. `crossvenue_promote.py` is the authoritative verdict: profitability may be claimed only when both the frozen validation report and the 56-day coverage report pass. A profitable subset of surviving observations is never sufficient.
+
 ```bash
 python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py \
   test_crossvenue_settlements.py test_crossvenue_chain.py test_crossvenue_pnl.py \
-  test_crossvenue_freeze.py test_crossvenue_validate.py
+  test_crossvenue_freeze.py test_crossvenue_validate.py test_crossvenue_coverage.py
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl
 python crossvenue_events.py data/crossvenue_snapshots.jsonl \
   --out data/crossvenue_events.jsonl --report reports/crossvenue_events.json
+python crossvenue_coverage.py --snapshots data/crossvenue_snapshots.jsonl \
+  --events data/crossvenue_events.jsonl --report reports/crossvenue_coverage.json
 python crossvenue_settlements.py data/crossvenue_events.jsonl \
   --existing data/crossvenue_settled_events.jsonl \
   --out data/crossvenue_settled_events.jsonl \
@@ -50,9 +54,11 @@ python crossvenue_chain.py --previous-dir /tmp/crossvenue-prior \
   --current-dir data --report reports/crossvenue_chain.json
 python crossvenue_validate.py data/crossvenue_pnl_events.jsonl \
   --chain-report reports/crossvenue_chain.json
+python crossvenue_promote.py --validation reports/crossvenue_validation.json \
+  --coverage reports/crossvenue_coverage.json
 ```
 
-Passing the promotion gate permits shadow signals only, not orders.
+Passing the authoritative promotion gate permits shadow signals only, not orders.
 
 ## Retired research pipeline
 
