@@ -19,12 +19,16 @@ Live Actions probe `29966052184` verified the original collector and produced va
 
 Schema v4 preserves Hyperliquid's reported funding boundary and derives a strictly future effective boundary from its documented hourly interval when the reported value is stale. The collector runs every five minutes, restores the latest artifact, resumes by unique `(cadence_slot_ms, coin)` keys, and publishes continuity diagnostics. Missing schedule slots remain explicit gaps; they are never backfilled from future observations. **No profitability inference is permitted during collection.**
 
+`crossvenue_events.py` builds deterministic candidate event windows from the prospective series. It freezes the last signal at least ten minutes before funding, applies a 60-second delayed entry, uses adverse bid/ask prices, requires five-second two-book coordination, preserves pending windows, and does not calculate returns or inspect a final holdout.
+
 ```bash
-python -m unittest -v test_crossvenue_snapshot.py
+python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl --audit-only
+python crossvenue_events.py data/crossvenue_snapshots.jsonl \
+  --out data/crossvenue_events.jsonl --report reports/crossvenue_events.json
 ```
 
 The frozen promotion gate requires a positive quarantined-period block-bootstrap LCB95, positive stress-cost and finite-capital returns, controlled drawdown/concentration, low two-leg failure rate, and clean timestamp/data validation. Passing permits shadow signals only, not orders.
