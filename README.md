@@ -37,11 +37,13 @@ Schema v4 preserves Hyperliquid's reported funding boundary and derives a strict
 
 `crossvenue_health.py` is deliberately outside the frozen experiment contract. Its separate hourly workflow downloads the latest successful immutable series artifact and reports collection staleness, append-only integrity, post-freeze counts, unique completed funding periods, coverage, and remaining promotion requirements. It fails closed if any required data/report is missing, the chain is absent or invalid, validation/promotion is invalid, counts are internally impossible, or collection is stale. It never changes evidence, strategy logic, the freeze manifest, or the cutoff, so operational monitoring cannot reset the prospective experiment.
 
+`crossvenue_actions_health.py` independently audits the live collector workflow rather than trusting only its last successful artifact. It fails closed when the latest successful collector is over 30 minutes old, more than two completed runs fail consecutively, an active run is stuck over 15 minutes, or the artifact restored by health monitoring is not from the newest approved successful collector run. The restoration decision and workflow-health report are retained with each health artifact for auditability.
+
 ```bash
 python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py \
   test_crossvenue_settlements.py test_crossvenue_chain.py test_crossvenue_pnl.py \
   test_crossvenue_freeze.py test_crossvenue_validate.py test_crossvenue_coverage.py \
-  test_crossvenue_health.py test_crossvenue_artifact.py
+  test_crossvenue_health.py test_crossvenue_artifact.py test_crossvenue_actions_health.py
 python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
   --out data/crossvenue_snapshots.jsonl
 python crossvenue_events.py data/crossvenue_snapshots.jsonl \
