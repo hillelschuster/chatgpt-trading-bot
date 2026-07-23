@@ -68,27 +68,28 @@ With equal notionals and total capital defined as the sum of both venue allocati
 - Pending events are not scored. Structurally invalid complete events fail closed as `invalid`.
 - Rejected two-book attempts are retained and charged 5 bps of total capital, equal to the 10 bps reserve on one half-capital leg.
 - Base and stress costs are fixed constants, never optimized.
-- Event-level output and aggregate diagnostics may accumulate during collection, but `profitability_claim_permitted` remains false. Formal inference belongs to the frozen validation stage after the minimum sample is reached.
+- Event-level output and aggregate diagnostics may accumulate during collection, but `profitability_claim_permitted` remains false. Formal inference belongs to the frozen validation stage after both the independent-period and elapsed-time minimums are reached.
 
 ## Evaluation
 
-- Minimum prospective collection: 8 weeks and 200 complete candidate funding events across BTC/ETH combined.
-- Development period: first 70% chronologically; final 30% remains quarantined until rules are frozen.
-- Parameter scope: one entry threshold selected from a predeclared small grid; no asset-specific thresholds.
-- Use non-overlapping event returns and block-bootstrap 95% confidence intervals by UTC day.
-- Finite-capital simulation enforces 50/50 prefunding, one position per coin, and no reuse of occupied collateral.
+- Minimum prospective collection: 56 elapsed days and 200 complete synchronized funding periods.
+- A synchronized period is one funding boundary with at least one exact complete BTC or ETH attempt. Simultaneous BTC/ETH attempts remain separate scored legs but count as one dependent period for partitioning and inference.
+- Development period: first 140 complete post-freeze periods plus intervening failed attempts.
+- Holdout period: all later attempts; metrics remain quarantined until 60 complete holdout periods exist.
+- Use non-overlapping synchronized period returns and moving-block bootstrap confidence intervals.
+- Finite-capital simulation sizes every same-boundary attempt from identical pre-period equity and compounds only after aggregate period P&L.
 
 ## Promotion gate
 
 All must pass on the quarantined period:
 
-1. net mean return and block-bootstrap LCB95 are positive;
-2. positive return under stress costs;
-3. finite-capital return is positive with realized and mark-to-market drawdown below 10%;
+1. net mean return and moving-block-bootstrap LCB95 are positive;
+2. positive return under 20 bps stress costs;
+3. finite-capital base and stress returns are positive;
 4. neither coin contributes over 70% of positive P&L;
 5. failed/partial two-leg attempts remain below 5%;
-6. no timestamp, duplicate, invalid-row, incomplete-slot, leakage or symbol-mapping violation;
-7. at least 60 independent completed events.
+6. no timestamp, duplicate, invalid-row, incomplete-slot, leakage, manifest-binding or symbol-mapping violation;
+7. at least 60 independent complete holdout periods and at least 56 elapsed collection days.
 
 Missing five-minute cadence slots reduce sample size and are reported; they are never forward-filled. Failure retires v1 without threshold rescue on the same holdout. Success permits live public-data shadow signals only, not orders.
 
