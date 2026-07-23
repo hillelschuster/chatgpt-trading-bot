@@ -15,6 +15,8 @@ DEFAULT_FILES = (
     "crossvenue_settlements.py",
     "crossvenue_pnl.py",
     "crossvenue_validate.py",
+    "crossvenue_coverage.py",
+    "crossvenue_promote.py",
     "crossvenue_chain.py",
     "crossvenue_freeze.py",
 )
