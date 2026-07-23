@@ -9,7 +9,9 @@ on:
     paths:
       - ".crossvenue-trigger"
       - "crossvenue_snapshot.py"
+      - "crossvenue_events.py"
       - "test_crossvenue_snapshot.py"
+      - "test_crossvenue_events.py"
       - "CROSS_VENUE_EXPERIMENT.md"
       - ".github/workflows/crossvenue-probe.yml"
 
@@ -30,8 +32,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m unittest -v test_crossvenue_snapshot.py
-      - run: python -m py_compile crossvenue_snapshot.py test_crossvenue_snapshot.py
+      - run: python -m unittest -v test_crossvenue_snapshot.py test_crossvenue_events.py
+      - run: python -m py_compile crossvenue_snapshot.py crossvenue_events.py test_crossvenue_snapshot.py test_crossvenue_events.py
       - name: Restore latest prospective series
         if: github.event_name != 'pull_request'
         env:
@@ -49,12 +51,19 @@ jobs:
           mkdir -p data reports
           python crossvenue_snapshot.py --coins BTC,ETH --cadence-seconds 300 \
             --out data/crossvenue_snapshots.jsonl > reports/crossvenue_continuity.json
+      - name: Build leakage-safe funding-event windows
+        run: >-
+          python crossvenue_events.py data/crossvenue_snapshots.jsonl
+          --out data/crossvenue_events.jsonl
+          --report reports/crossvenue_events.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ${{ github.event_name == 'pull_request' && format('crossvenue-probe-{0}', github.run_id) || 'crossvenue-series' }}
           path: |
             data/crossvenue_snapshots.jsonl
+            data/crossvenue_events.jsonl
             reports/crossvenue_continuity.json
+            reports/crossvenue_events.json
           retention-days: 90
           if-no-files-found: warn
