@@ -5,8 +5,8 @@ from crossvenue_promote import promote
 
 
 def snapshot(slot, coin="BTC", hl_boundary=None, okx_boundary=None):
-    hl_boundary = hl_boundary or slot + 3_600_000
-    okx_boundary = okx_boundary or slot + 3_600_000
+    hl_boundary = slot + 3_600_000 if hl_boundary is None else hl_boundary
+    okx_boundary = slot + 3_600_000 if okx_boundary is None else okx_boundary
     return {"captured_at_ms": slot + 1_000, "cadence_slot_ms": slot, "coin": coin,
             "hyperliquid": {"effective_next_funding_time_ms": hl_boundary},
             "okx_swap": {"funding_time_ms": okx_boundary}}
@@ -36,7 +36,7 @@ class CoverageTest(unittest.TestCase):
         rows = []
         slots = 56 * 24 * 12 + 1
         for i in range(slots):
-            if i % 10 == 0:
+            if i not in (0, slots - 1) and i % 10 == 0:
                 continue
             slot = i * CADENCE_MS
             rows.extend([snapshot(slot, "BTC"), snapshot(slot, "ETH")])
