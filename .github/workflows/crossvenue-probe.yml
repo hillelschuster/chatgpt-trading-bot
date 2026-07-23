@@ -17,6 +17,7 @@ on:
       - "crossvenue_validate.py"
       - "crossvenue_coverage.py"
       - "crossvenue_promote.py"
+      - "crossvenue_artifact.py"
       - "test_crossvenue_snapshot.py"
       - "test_crossvenue_events.py"
       - "test_crossvenue_settlements.py"
@@ -25,6 +26,7 @@ on:
       - "test_crossvenue_freeze.py"
       - "test_crossvenue_validate.py"
       - "test_crossvenue_coverage.py"
+      - "test_crossvenue_artifact.py"
       - "CROSS_VENUE_EXPERIMENT.md"
       - ".github/workflows/crossvenue-probe.yml"
 
@@ -50,27 +52,25 @@ jobs:
           test_crossvenue_events.py test_crossvenue_settlements.py
           test_crossvenue_chain.py test_crossvenue_pnl.py
           test_crossvenue_freeze.py test_crossvenue_validate.py
-          test_crossvenue_coverage.py
+          test_crossvenue_coverage.py test_crossvenue_artifact.py
       - run: >-
           python -m py_compile crossvenue_snapshot.py crossvenue_events.py
           crossvenue_settlements.py crossvenue_chain.py crossvenue_pnl.py
           crossvenue_freeze.py crossvenue_validate.py crossvenue_coverage.py
-          crossvenue_promote.py test_crossvenue_snapshot.py test_crossvenue_events.py
-          test_crossvenue_settlements.py test_crossvenue_chain.py
-          test_crossvenue_pnl.py test_crossvenue_freeze.py
+          crossvenue_promote.py crossvenue_artifact.py test_crossvenue_snapshot.py
+          test_crossvenue_events.py test_crossvenue_settlements.py
+          test_crossvenue_chain.py test_crossvenue_pnl.py test_crossvenue_freeze.py
           test_crossvenue_validate.py test_crossvenue_coverage.py
-      - name: Restore latest prospective series
+          test_crossvenue_artifact.py
+      - name: Restore latest successful prospective series
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p data
-          artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=crossvenue-series&per_page=100" \
-            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .id // empty')
-          if [ -n "$artifact_id" ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/previous.zip
-            unzip -o /tmp/previous.zip -d .
-          fi
+          python crossvenue_artifact.py --repository "$GITHUB_REPOSITORY" \
+            --artifact-name crossvenue-series --out /tmp/previous.zip
+          if [ -s /tmp/previous.zip ]; then unzip -o /tmp/previous.zip -d .; fi
       - name: Capture restored baseline
         run: |
           mkdir -p /tmp/crossvenue-prior
