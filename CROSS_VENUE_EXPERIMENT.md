@@ -14,16 +14,18 @@ Binance USD-M and Bybit were both tested and rejected operationally for GitHub-h
 
 Capture every 5 minutes:
 
-- collector timestamp and exchange book timestamps;
-- Hyperliquid: coin, best bid/ask, mark, oracle, current/predicted funding, interval and next funding time;
+- collector timestamp, five-minute cadence slot and exchange book timestamps;
+- Hyperliquid: coin, best bid/ask, mark, oracle, current/predicted funding, reported boundary, effective boundary and interval;
 - OKX: swap instrument, best bid/ask, last price, current-period predicted funding, premium, funding time, next funding time and settled rate;
 - schema version and explicit symbol mapping.
 
-Reject a snapshot when either book is missing/crossed, a book timestamp differs by more than 60 seconds, price is non-positive, symbol mapping fails, or required funding fields are absent. Store raw JSONL append-only; never revise observations after outcomes are known.
+Hyperliquid pays funding hourly. Its raw `predictedFundings.nextFundingTime` is preserved. When that value is not after capture, the effective boundary is derived by advancing the reported boundary by the documented funding interval until it is strictly after capture. This normalization is deterministic, versioned and never changes the reported value.
+
+Reject a snapshot when either book is missing/crossed, a book timestamp differs by more than 60 seconds, price is non-positive, symbol mapping fails, or required funding fields are absent. Store JSONL append-only. A `(cadence_slot_ms, coin)` key is unique: reruns resume without duplicating observations. Every artifact records duplicate, invalid, incomplete-slot and missing-cadence diagnostics. Missing cadence slots are retained as explicit gaps rather than repaired with future data.
 
 ## Entry and exit
 
-- Observe at least 10 minutes before the earliest relevant funding timestamp.
+- Observe at least 10 minutes before the earliest relevant effective funding timestamp.
 - Simulated entry occurs 60 seconds after the signal using adverse executable prices: buy at ask, sell at bid, plus fixed slippage.
 - Require both legs to be executable within a 5-second coordination window; otherwise record a failed attempt and charge one-leg unwind cost.
 - Hold through one funding event, then exit 60 seconds after both venues publish settlement using adverse executable prices.
@@ -58,14 +60,14 @@ All must pass on the quarantined period:
 3. finite-capital return is positive with realized and mark-to-market drawdown below 10%;
 4. neither coin contributes over 70% of positive P&L;
 5. failed/partial two-leg attempts remain below 5%;
-6. no timestamp, continuity, leakage, or symbol-mapping violation;
+6. no timestamp, duplicate, invalid-row, incomplete-slot, leakage or symbol-mapping violation;
 7. at least 60 independent completed events.
 
-Failure retires v1 without threshold rescue on the same holdout. Success permits live public-data shadow signals only, not orders.
+Missing five-minute cadence slots reduce sample size and are reported; they are never forward-filled. Failure retires v1 without threshold rescue on the same holdout. Success permits live public-data shadow signals only, not orders.
 
 ## Official API basis
 
-- Hyperliquid public `info`: `predictedFundings`, `metaAndAssetCtxs`, `l2Book`, and historical `fundingHistory`.
-- OKX public APIs: `/api/v5/market/ticker`, `/api/v5/market/books`, `/api/v5/public/funding-rate`, and funding-rate history for swap instruments.
+- Hyperliquid public `info`: `predictedFundings`, `metaAndAssetCtxs`, `l2Book`, and historical `fundingHistory`; official funding documentation states that funding is paid every hour.
+- OKX public APIs: `/api/v5/market/ticker`, `/api/v5/market/books`, `/api/v5/public/funding-rate`, and funding-rate history for swap instruments. OKX `method=current_period` identifies `fundingRate` as the current-period rate.
 
 The collector preserves raw timing and funding fields because venue semantics can change. Any schema change invalidates collection until reviewed.
