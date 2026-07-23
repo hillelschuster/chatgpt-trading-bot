@@ -73,6 +73,7 @@ jobs:
           --manifest data/crossvenue_experiment_freeze.json
           --evidence data/crossvenue_pnl_events.jsonl
           --report reports/crossvenue_freeze.json
+          --allow-safe-upgrade
       - name: Capture restored baseline
         run: |
           mkdir -p /tmp/crossvenue-prior
