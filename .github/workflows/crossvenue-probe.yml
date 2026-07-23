@@ -82,6 +82,9 @@ jobs:
         run: >-
           python crossvenue_freeze.py
           --manifest data/crossvenue_experiment_freeze.json
+          --evidence data/crossvenue_snapshots.jsonl
+          --evidence data/crossvenue_events.jsonl
+          --evidence data/crossvenue_settled_events.jsonl
           --evidence data/crossvenue_pnl_events.jsonl
           --report reports/crossvenue_freeze.json
           --allow-safe-upgrade
