@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from crossvenue_health import DAY_MS, summarize
+from crossvenue_health import DAY_MS, CADENCE_MS, recent_snapshot_cadence, summarize
 
 
 def write_json(path, value):
@@ -64,6 +64,7 @@ class HealthTest(unittest.TestCase):
             self.assertTrue(result["integrity"]["required_reports_present"])
             self.assertEqual("HEALTHY", result["operations"]["status"])
             self.assertTrue(result["operations"]["restoration"]["matches_latest_success"])
+            self.assertEqual("WARMING_UP", result["collection"]["recent_cadence"]["status"])
 
     def test_complete_rows_count_unique_periods(self):
         with tempfile.TemporaryDirectory() as root:
@@ -146,6 +147,55 @@ class HealthTest(unittest.TestCase):
             result = summarize(data, reports, now_ms=cutoff + 2_000_000)
             self.assertEqual("INVALID", result["status"])
             self.assertIn("collection_stale", result["integrity"]["blockers"])
+
+    def test_recent_data_plane_cadence_accepts_complete_btc_eth_slots(self):
+        now = 20 * CADENCE_MS
+        cutoff = now - 2 * 3_600_000
+        first = ((now - 3_600_000) // CADENCE_MS + 1) * CADENCE_MS
+        last = ((now - 120_000) // CADENCE_MS) * CADENCE_MS
+        rows = [
+            {"cadence_slot_ms": slot, "coin": coin}
+            for slot in range(first, last + 1, CADENCE_MS)
+            for coin in ("BTC", "ETH")
+        ]
+        result = recent_snapshot_cadence(rows, cutoff, now)
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["expected_rows"], result["observed_rows"])
+        self.assertEqual(1.0, result["complete_slot_coverage"])
+
+    def test_recent_data_plane_cadence_rejects_fresh_but_one_sided_series(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, _ = self.fixture(root)
+            now = 20 * CADENCE_MS
+            cutoff = now - 2 * 3_600_000
+            write_json(data / "crossvenue_experiment_freeze.json", {
+                "schema": "crossvenue-experiment-freeze-v2", "frozen_at_ms": cutoff,
+                "evidence_cutoff_ms": cutoff, "files": {"x": "abc"}})
+            first = ((now - 3_600_000) // CADENCE_MS + 1) * CADENCE_MS
+            last = ((now - 120_000) // CADENCE_MS) * CADENCE_MS
+            rows = [{"captured_at_ms": slot, "cadence_slot_ms": slot, "coin": "BTC"}
+                    for slot in range(first, last + 1, CADENCE_MS)]
+            write_jsonl(data / "crossvenue_snapshots.jsonl", rows)
+            result = summarize(data, reports, now_ms=now)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("recent_snapshot_cadence_unhealthy", result["integrity"]["blockers"])
+            self.assertEqual(0.0, result["collection"]["recent_cadence"]["complete_slot_coverage"])
+            self.assertLess(result["collection"]["recent_cadence"]["row_coverage"], 0.90)
+
+    def test_recent_data_plane_cadence_rejects_duplicate_rows(self):
+        now = 20 * CADENCE_MS
+        cutoff = now - 2 * 3_600_000
+        first = ((now - 3_600_000) // CADENCE_MS + 1) * CADENCE_MS
+        last = ((now - 120_000) // CADENCE_MS) * CADENCE_MS
+        rows = [
+            {"cadence_slot_ms": slot, "coin": coin}
+            for slot in range(first, last + 1, CADENCE_MS)
+            for coin in ("BTC", "ETH")
+        ]
+        rows.append(dict(rows[-1]))
+        result = recent_snapshot_cadence(rows, cutoff, now)
+        self.assertFalse(result["healthy"])
+        self.assertEqual(1, result["duplicate_rows"])
 
 
 if __name__ == "__main__":
