@@ -20,6 +20,7 @@ ALLOWED_ROOTS = {"data", "reports"}
 BACKUP_PREFIX = ".crossvenue-restore-backup."
 STAGE_PREFIX = ".crossvenue-restore-stage."
 JOURNAL_NAME = "journal.json"
+JOURNAL_SCHEMA_VERSION = 2
 
 
 def _safe_name(raw: str) -> str:
@@ -54,6 +55,22 @@ def _lstat(path: Path) -> os.stat_result | None:
         return None
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _valid_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _validate_restore_root(destination: Path) -> None:
     destination_stat = _lstat(destination)
     if destination_stat is None:
@@ -67,7 +84,6 @@ def _validate_restore_root(destination: Path) -> None:
 def _validate_destination_path(destination: Path, name: str) -> None:
     """Reject redirects and special files before any evidence path is mutated."""
     _validate_restore_root(destination)
-
     relative = PurePosixPath(name)
     current = destination
     for part in relative.parts[:-1]:
@@ -79,7 +95,6 @@ def _validate_destination_path(destination: Path, name: str) -> None:
             raise RuntimeError(f"symlink_destination_parent:{name}")
         if not stat.S_ISDIR(current_stat.st_mode):
             raise RuntimeError(f"non_directory_destination_parent:{name}")
-
     target = destination / name
     target_stat = _lstat(target)
     if target_stat is None:
@@ -107,22 +122,89 @@ def _write_journal(backup_root: Path, journal: dict) -> None:
     _fsync_directory(backup_root)
 
 
+def _regular_digest(path: Path, label: str) -> str | None:
+    path_stat = _lstat(path)
+    if path_stat is None:
+        return None
+    if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+        raise RuntimeError(f"invalid_restore_recovery_file:{label}")
+    return _sha256_file(path)
+
+
 def _load_journal(backup_root: Path) -> dict:
     path = backup_root / JOURNAL_NAME
     try:
         journal = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"unrecoverable_restore_journal:{backup_root.name}:{exc}") from exc
-    if journal.get("schema_version") != 1 or journal.get("state") not in {"prepared", "committed"}:
+    schema_version = journal.get("schema_version")
+    if schema_version not in {1, JOURNAL_SCHEMA_VERSION}:
+        raise RuntimeError(f"unsupported_restore_journal_schema:{backup_root.name}")
+    if journal.get("state") not in {"prepared", "committed"}:
         raise RuntimeError(f"invalid_restore_journal:{backup_root.name}")
     entries = journal.get("entries")
     if not isinstance(entries, list) or not entries:
         raise RuntimeError(f"invalid_restore_journal_entries:{backup_root.name}")
+    seen: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("existed"), bool):
             raise RuntimeError(f"invalid_restore_journal_entry:{backup_root.name}")
         entry["name"] = _safe_name(str(entry.get("name", "")))
+        if entry["name"] in seen:
+            raise RuntimeError(f"duplicate_restore_journal_entry:{backup_root.name}:{entry['name']}")
+        seen.add(entry["name"])
+        if schema_version == 1:
+            target = backup_root.parent / entry["name"]
+            backup = backup_root / entry["name"]
+            target_digest = _regular_digest(target, f"legacy_target:{entry['name']}")
+            backup_digest = _regular_digest(backup, f"legacy_backup:{entry['name']}")
+            entry["old_sha256"] = backup_digest if entry["existed"] else None
+            entry["new_sha256"] = target_digest or ("0" * 64)
+            if entry["existed"] and backup_digest is None and target_digest is None:
+                raise RuntimeError(
+                    f"unrecoverable_legacy_restore_entry:{backup_root.name}:{entry['name']}"
+                )
+        if not _valid_sha256(entry.get("new_sha256")):
+            raise RuntimeError(f"invalid_restore_journal_new_digest:{backup_root.name}:{entry['name']}")
+        old_digest = entry.get("old_sha256")
+        if entry["existed"]:
+            if not _valid_sha256(old_digest):
+                if schema_version == 1 and journal["state"] == "prepared":
+                    legacy_target_digest = _regular_digest(
+                        backup_root.parent / entry["name"],
+                        f"legacy_target:{entry['name']}",
+                    )
+                    if legacy_target_digest:
+                        entry["old_sha256"] = legacy_target_digest
+                    else:
+                        raise RuntimeError(
+                            f"invalid_restore_journal_old_digest:{backup_root.name}:{entry['name']}"
+                        )
+                else:
+                    raise RuntimeError(
+                        f"invalid_restore_journal_old_digest:{backup_root.name}:{entry['name']}"
+                    )
+        elif old_digest is not None:
+            raise RuntimeError(
+                f"unexpected_restore_journal_old_digest:{backup_root.name}:{entry['name']}"
+            )
+    journal["loaded_schema_version"] = schema_version
     return journal
+
+
+def _verify_committed_transaction(destination: Path, backup_root: Path, journal: dict) -> None:
+    _validate_destination_entries(destination, [entry["name"] for entry in journal["entries"]])
+    for entry in journal["entries"]:
+        name = entry["name"]
+        target_digest = _regular_digest(destination / name, f"target:{name}")
+        if target_digest != entry["new_sha256"]:
+            raise RuntimeError(f"committed_restore_target_mismatch:{name}")
+        backup_digest = _regular_digest(backup_root / name, f"backup:{name}")
+        if entry["existed"]:
+            if backup_digest != entry["old_sha256"]:
+                raise RuntimeError(f"committed_restore_backup_mismatch:{name}")
+        elif backup_digest is not None:
+            raise RuntimeError(f"unexpected_committed_restore_backup:{name}")
 
 
 def _rollback_transaction(destination: Path, backup_root: Path, journal: dict) -> None:
@@ -133,17 +215,32 @@ def _rollback_transaction(destination: Path, backup_root: Path, journal: dict) -
         target = destination / name
         backup = backup_root / name
         try:
+            target_digest = _regular_digest(target, f"target:{name}")
+            backup_digest = _regular_digest(backup, f"backup:{name}")
             if entry["existed"]:
-                if backup.exists():
-                    if target.exists():
-                        target.unlink()
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(backup, target)
-                    _fsync_directory(target.parent)
-            elif target.exists():
+                if backup_digest is None:
+                    if target_digest != entry["old_sha256"]:
+                        raise RuntimeError(f"missing_restore_backup:{name}")
+                    continue
+                if backup_digest != entry["old_sha256"]:
+                    raise RuntimeError(f"restore_backup_digest_mismatch:{name}")
+                if target_digest not in {None, entry["new_sha256"]}:
+                    raise RuntimeError(f"restore_target_digest_mismatch:{name}")
+                if target_digest is not None:
+                    target.unlink()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(backup, target)
+                _fsync_directory(target.parent)
+            else:
+                if backup_digest is not None:
+                    raise RuntimeError(f"unexpected_restore_backup:{name}")
+                if target_digest is None:
+                    continue
+                if target_digest != entry["new_sha256"]:
+                    raise RuntimeError(f"restore_new_target_digest_mismatch:{name}")
                 target.unlink()
                 _fsync_directory(target.parent)
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             errors.append(f"{name}:{exc}")
     if errors:
         raise RuntimeError("restore_rollback_failed:" + "|".join(errors))
@@ -158,14 +255,22 @@ def recover_interrupted_restores(destination: Path) -> int:
     _validate_restore_root(destination)
     recovered = 0
     for stage_root in sorted(destination.glob(f"{STAGE_PREFIX}*")):
-        if stage_root.is_dir():
-            shutil.rmtree(stage_root)
-            recovered += 1
-    for backup_root in sorted(destination.glob(f"{BACKUP_PREFIX}*")):
-        if not backup_root.is_dir():
+        stage_stat = _lstat(stage_root)
+        if stage_stat is None:
             continue
+        if stat.S_ISLNK(stage_stat.st_mode) or not stat.S_ISDIR(stage_stat.st_mode):
+            raise RuntimeError(f"invalid_restore_stage:{stage_root.name}")
+        shutil.rmtree(stage_root)
+        recovered += 1
+    for backup_root in sorted(destination.glob(f"{BACKUP_PREFIX}*")):
+        backup_stat = _lstat(backup_root)
+        if backup_stat is None:
+            continue
+        if stat.S_ISLNK(backup_stat.st_mode) or not stat.S_ISDIR(backup_stat.st_mode):
+            raise RuntimeError(f"invalid_restore_backup_root:{backup_root.name}")
         journal = _load_journal(backup_root)
         if journal["state"] == "committed":
+            _verify_committed_transaction(destination, backup_root, journal)
             shutil.rmtree(backup_root)
             _fsync_directory(destination)
         else:
@@ -174,7 +279,10 @@ def recover_interrupted_restores(destination: Path) -> int:
     return recovered
 
 
-def _inspect_archive(archive: zipfile.ZipFile, required: set[str]) -> tuple[dict, list[zipfile.ZipInfo]]:
+def _inspect_archive(
+    archive: zipfile.ZipFile,
+    required: set[str],
+) -> tuple[dict, list[zipfile.ZipInfo]]:
     members: dict[str, dict] = {}
     files: list[zipfile.ZipInfo] = []
     total = 0
@@ -249,16 +357,30 @@ def _stage_members(
     return names
 
 
-def _commit_staged_members(stage_root: Path, destination: Path, names: list[str]) -> None:
+def _commit_staged_members(
+    stage_root: Path,
+    destination: Path,
+    names: list[str],
+    member_reports: dict[str, dict],
+) -> None:
     _validate_destination_entries(destination, names)
+    entries = []
+    for name in names:
+        target = destination / name
+        existed = target.exists()
+        entries.append(
+            {
+                "name": name,
+                "existed": existed,
+                "old_sha256": _sha256_file(target) if existed else None,
+                "new_sha256": member_reports[name]["sha256"],
+            }
+        )
     backup_root = Path(tempfile.mkdtemp(prefix=BACKUP_PREFIX, dir=destination))
     journal = {
-        "schema_version": 1,
+        "schema_version": JOURNAL_SCHEMA_VERSION,
         "state": "prepared",
-        "entries": [
-            {"name": name, "existed": (destination / name).exists()}
-            for name in names
-        ],
+        "entries": entries,
     }
     _write_journal(backup_root, journal)
     try:
@@ -279,6 +401,7 @@ def _commit_staged_members(stage_root: Path, destination: Path, names: list[str]
     except Exception:
         _rollback_transaction(destination, backup_root, journal)
         raise
+    _verify_committed_transaction(destination, backup_root, journal)
     shutil.rmtree(backup_root)
     _fsync_directory(destination)
 
@@ -293,12 +416,13 @@ def extract_bundle(zip_path: Path, destination: Path, required: set[str]) -> dic
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             report, files = _inspect_archive(archive, required)
             names = _stage_members(archive, files, stage_root, report)
-        _commit_staged_members(stage_root, destination, names)
+        _commit_staged_members(stage_root, destination, names, report["members"])
     finally:
         shutil.rmtree(stage_root, ignore_errors=True)
     report["zip_sha256"] = hashlib.sha256(raw).hexdigest()
     report["extraction"] = "crash_recoverable_transactional_bundle_replace"
     report["destination_path_policy"] = "no_symlink_or_special_file_components"
+    report["recovery_policy"] = "old_and_new_sha256_verified_before_mutation"
     report["recovered_interrupted_transactions"] = recovered
     return report
 
