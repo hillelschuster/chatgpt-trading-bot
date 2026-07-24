@@ -28,6 +28,7 @@ jobs:
           test_crossvenue_artifact.py test_crossvenue_actions_health.py
           test_crossvenue_scheduler_health.py test_crossvenue_actions_binding.py
           test_crossvenue_actions_gate.py test_crossvenue_health_workflow.py
+          test_crossvenue_bundle.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
@@ -37,7 +38,8 @@ jobs:
           crossvenue_scheduler_health.py test_crossvenue_scheduler_health.py
           crossvenue_actions_binding.py test_crossvenue_actions_binding.py
           crossvenue_actions_gate.py test_crossvenue_actions_gate.py
-          test_crossvenue_health_workflow.py
+          test_crossvenue_health_workflow.py crossvenue_bundle.py
+          test_crossvenue_bundle.py
       - name: Download latest approved successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,7 +49,13 @@ jobs:
             --artifact-name crossvenue-series --branch main \
             --workflow-path .github/workflows/crossvenue-probe.yml \
             --out /tmp/series.zip --required | tee reports/crossvenue_restoration.json
-          unzip -o /tmp/series.zip -d .
+          python crossvenue_bundle.py /tmp/series.zip --destination . \
+            --report reports/crossvenue_bundle.json \
+            --required-member data/crossvenue_experiment_freeze.json \
+            --required-member data/crossvenue_snapshots.jsonl \
+            --required-member reports/crossvenue_chain.json \
+            --required-member reports/crossvenue_validation.json \
+            --required-member reports/crossvenue_promotion.json
       - name: Audit recent snapshot payload and timestamp integrity
         run: >-
           python crossvenue_snapshot_health.py
@@ -112,6 +120,7 @@ jobs:
           name: crossvenue-health-${{ github.run_id }}
           path: |
             reports/crossvenue_restoration.json
+            reports/crossvenue_bundle.json
             reports/crossvenue_workflow_runs.json
             reports/crossvenue_snapshot_health.json
             reports/crossvenue_snapshot_binding.json
