@@ -40,6 +40,7 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(report["schema_version"], 4)
             self.assertEqual(report["member_count"], 2)
             self.assertEqual(report["extraction"], "crash_recoverable_transactional_bundle_replace")
+            self.assertEqual(report["destination_path_policy"], "no_symlink_or_special_file_components")
             self.assertEqual(report["recovered_interrupted_transactions"], 0)
             self.assertEqual(
                 report["members"]["data/crossvenue_snapshots.jsonl"]["sha256"],
@@ -200,6 +201,84 @@ class BundleTests(unittest.TestCase):
                 archive.writestr(info, "target")
             with self.assertRaisesRegex(ValueError, "symlink_member"):
                 inspect_bundle(path, set())
+
+    def test_symlink_destination_parent_is_rejected_without_external_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            out = root / "out"
+            out.mkdir()
+            (out / "data").symlink_to(outside, target_is_directory=True)
+            bundle = self.make_zip(root, [("data/one", b"new")])
+
+            with self.assertRaisesRegex(RuntimeError, "symlink_destination_parent"):
+                extract_bundle(bundle, out, {"data/one"})
+
+            self.assertFalse((outside / "one").exists())
+            self.assertFalse(list(out.glob(".crossvenue-restore-*")))
+
+    def test_symlink_destination_target_is_rejected_without_touching_link_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.write_bytes(b"old")
+            out = root / "out"
+            target = out / "data/one"
+            target.parent.mkdir(parents=True)
+            target.symlink_to(outside)
+            bundle = self.make_zip(root, [("data/one", b"new")])
+
+            with self.assertRaisesRegex(RuntimeError, "symlink_destination_target"):
+                extract_bundle(bundle, out, {"data/one"})
+
+            self.assertEqual(outside.read_bytes(), b"old")
+            self.assertTrue(target.is_symlink())
+
+    def test_non_directory_parent_and_special_target_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            (out / "data").write_bytes(b"not-a-directory")
+            bundle = self.make_zip(root, [("data/one", b"new")])
+            with self.assertRaisesRegex(RuntimeError, "non_directory_destination_parent"):
+                extract_bundle(bundle, out, {"data/one"})
+
+        if hasattr(os, "mkfifo"):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                out = root / "out"
+                target = out / "data/one"
+                target.parent.mkdir(parents=True)
+                os.mkfifo(target)
+                bundle = self.make_zip(root, [("data/one", b"new")])
+                with self.assertRaisesRegex(RuntimeError, "non_regular_destination_target"):
+                    extract_bundle(bundle, out, {"data/one"})
+
+    def test_recovery_fails_closed_if_destination_path_became_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            (out / "data").symlink_to(outside, target_is_directory=True)
+            backup_root = out / f"{BACKUP_PREFIX}crashed"
+            backup = backup_root / "data/one"
+            backup.parent.mkdir(parents=True)
+            backup.write_bytes(b"old")
+            (backup_root / JOURNAL_NAME).write_text(json.dumps({
+                "schema_version": 1,
+                "state": "prepared",
+                "entries": [{"name": "data/one", "existed": True}],
+            }))
+
+            with self.assertRaisesRegex(RuntimeError, "symlink_destination_parent"):
+                recover_interrupted_restores(out)
+
+            self.assertTrue(backup_root.exists())
+            self.assertFalse((outside / "one").exists())
 
 
 if __name__ == "__main__":
