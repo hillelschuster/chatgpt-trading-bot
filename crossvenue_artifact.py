@@ -31,8 +31,9 @@ class SafeArtifactRedirectHandler(urllib.request.HTTPRedirectHandler):
         if (source.scheme.lower(), source.hostname, source.port) != (
             target.scheme.lower(), target.hostname, target.port
         ):
-            for header in SENSITIVE_REDIRECT_HEADERS:
-                redirected.remove_header(header)
+            for header in list(redirected.headers):
+                if header.lower() in SENSITIVE_REDIRECT_HEADERS:
+                    redirected.remove_header(header)
         return redirected
 
 
