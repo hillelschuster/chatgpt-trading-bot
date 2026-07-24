@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import time
 from pathlib import Path
 
 from crossvenue_snapshot_health import (
@@ -12,24 +13,37 @@ from crossvenue_snapshot_health import (
     read_jsonl,
 )
 
+MAX_REPORT_AGE_MS = 10 * 60_000
+
 
 def file_sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def verify(snapshots_path, report_path):
+def verify(snapshots_path, report_path, now_ms=None):
+    verified_at_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     report = json.loads(Path(report_path).read_text())
     generated_at_ms = report.get("generated_at_ms")
     if generated_at_ms is None:
         return {
             "status": "INVALID",
             "valid": False,
+            "verified_at_ms": verified_at_ms,
             "blockers": ["snapshot_health_generated_at_missing"],
         }
 
+    generated_at_ms = int(generated_at_ms)
+    report_age_ms = verified_at_ms - generated_at_ms
+    temporal_blockers = []
+    if generated_at_ms > verified_at_ms + FUTURE_TOLERANCE_MS:
+        temporal_blockers.append("snapshot_health_generated_at_future")
+    if report_age_ms > MAX_REPORT_AGE_MS:
+        temporal_blockers.append("snapshot_health_report_stale")
+
+    rows = read_jsonl(snapshots_path)
     expected = audit(
-        read_jsonl(snapshots_path),
-        now_ms=int(generated_at_ms),
+        rows,
+        now_ms=generated_at_ms,
         window_ms=RECENT_WINDOW_MS,
         future_tolerance_ms=FUTURE_TOLERANCE_MS,
     )
@@ -38,16 +52,22 @@ def verify(snapshots_path, report_path):
         if expected.get(key) != report.get(key)
     )
     digest = file_sha256(snapshots_path)
-    valid = not mismatches
+    valid = not mismatches and not temporal_blockers
+    blockers = list(temporal_blockers)
+    if mismatches:
+        blockers.append("snapshot_health_evidence_mismatch")
     return {
         "status": "HEALTHY" if valid else "INVALID",
         "valid": valid,
-        "generated_at_ms": int(generated_at_ms),
+        "generated_at_ms": generated_at_ms,
+        "verified_at_ms": verified_at_ms,
+        "report_age_ms": report_age_ms,
+        "maximum_report_age_ms": MAX_REPORT_AGE_MS,
         "audit_window_ms": RECENT_WINDOW_MS,
         "future_tolerance_ms": FUTURE_TOLERANCE_MS,
         "snapshot_sha256": digest,
         "mismatched_fields": mismatches,
-        "blockers": [] if valid else ["snapshot_health_evidence_mismatch"],
+        "blockers": blockers,
     }
 
 
