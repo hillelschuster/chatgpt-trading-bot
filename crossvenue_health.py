@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Summarize prospective cross-venue evidence and collector health without changing the frozen contract."""
 import argparse
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -25,6 +26,7 @@ REQUIRED_DATA = (
 REQUIRED_REPORTS = (
     "crossvenue_actions_health.json",
     "crossvenue_snapshot_health.json",
+    "crossvenue_snapshot_binding.json",
     "crossvenue_chain.json",
     "crossvenue_coverage.json",
     "crossvenue_validation.json",
@@ -42,6 +44,11 @@ def read_jsonl(path):
     if not target.exists():
         return []
     return [json.loads(line) for line in target.read_text().splitlines() if line.strip()]
+
+
+def file_sha256(path):
+    target = Path(path)
+    return hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
 
 
 def row_time(row):
@@ -137,12 +144,14 @@ def summarize(data_dir, reports_dir, now_ms=None):
     missing_reports = missing_files(reports_dir, REQUIRED_REPORTS)
 
     manifest = read_json(data_dir / "crossvenue_experiment_freeze.json", {}) or {}
-    snapshots = read_jsonl(data_dir / "crossvenue_snapshots.jsonl")
+    snapshots_path = data_dir / "crossvenue_snapshots.jsonl"
+    snapshots = read_jsonl(snapshots_path)
     events = read_jsonl(data_dir / "crossvenue_events.jsonl")
     settlements = read_jsonl(data_dir / "crossvenue_settled_events.jsonl")
     pnl = read_jsonl(data_dir / "crossvenue_pnl_events.jsonl")
     actions_health = read_json(reports_dir / "crossvenue_actions_health.json", {}) or {}
     snapshot_health = read_json(reports_dir / "crossvenue_snapshot_health.json", {}) or {}
+    snapshot_binding = read_json(reports_dir / "crossvenue_snapshot_binding.json", {}) or {}
     chain = read_json(reports_dir / "crossvenue_chain.json", {}) or {}
     coverage = read_json(reports_dir / "crossvenue_coverage.json", {}) or {}
     validation = read_json(reports_dir / "crossvenue_validation.json", {}) or {}
@@ -158,6 +167,11 @@ def summarize(data_dir, reports_dir, now_ms=None):
     stale_minutes = ((now_ms - last_snapshot_ms) / 60_000) if last_snapshot_ms else None
     stale = last_snapshot_ms == 0 or now_ms - last_snapshot_ms > STALE_MULTIPLIER * CADENCE_MS
     span_days = float(coverage.get("collection_span_days") or 0)
+    snapshot_digest = file_sha256(snapshots_path)
+    binding_digest_matches = bool(
+        snapshot_digest
+        and snapshot_binding.get("snapshot_sha256") == snapshot_digest
+    )
 
     blockers = []
     if missing_data:
@@ -174,6 +188,12 @@ def summarize(data_dir, reports_dir, now_ms=None):
         blockers.append("snapshot_health_missing")
     elif snapshot_health.get("status") != "HEALTHY" or not snapshot_health.get("healthy", False):
         blockers.append("snapshot_payload_unhealthy")
+    if not snapshot_binding:
+        blockers.append("snapshot_binding_missing")
+    elif (snapshot_binding.get("status") != "HEALTHY"
+          or not snapshot_binding.get("valid", False)
+          or not binding_digest_matches):
+        blockers.append("snapshot_binding_invalid")
     if not chain:
         blockers.append("artifact_chain_missing")
     elif not chain.get("valid", False):
@@ -229,6 +249,12 @@ def summarize(data_dir, reports_dir, now_ms=None):
                            "invalid_rows": snapshot_health.get("invalid_rows"),
                            "duplicate_rows": snapshot_health.get("duplicate_rows"),
                            "blockers": snapshot_health.get("blockers", []),
+                           "binding_status": snapshot_binding.get("status"),
+                           "binding_valid": snapshot_binding.get("valid"),
+                           "snapshot_sha256": snapshot_digest,
+                           "bound_snapshot_sha256": snapshot_binding.get("snapshot_sha256"),
+                           "binding_digest_matches": binding_digest_matches,
+                           "binding_blockers": snapshot_binding.get("blockers", []),
                        }},
         "operations": {
             "status": actions_health.get("status"),
@@ -245,6 +271,10 @@ def summarize(data_dir, reports_dir, now_ms=None):
                       "snapshot_health_present": bool(snapshot_health),
                       "snapshot_health_valid": snapshot_health.get("healthy"),
                       "snapshot_health_blockers": snapshot_health.get("blockers", []),
+                      "snapshot_binding_present": bool(snapshot_binding),
+                      "snapshot_binding_valid": snapshot_binding.get("valid"),
+                      "snapshot_binding_digest_matches": binding_digest_matches,
+                      "snapshot_binding_blockers": snapshot_binding.get("blockers", []),
                       "chain_present": bool(chain), "chain_valid": chain.get("valid"),
                       "chain_errors": chain.get("errors", []), "blockers": blockers},
         "progress": {"minimum_periods": MIN_PERIODS, "periods_remaining": periods_remaining,
