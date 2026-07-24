@@ -13,6 +13,10 @@ from pathlib import Path
 
 ALLOWED_EVENTS = {"schedule", "workflow_dispatch"}
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
+MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
+MAX_ZIP_MEMBERS = 10_000
+MAX_ZIP_COMPRESSION_RATIO = 200.0
+ZIP_SAFETY_POLICY = "bounded_unencrypted_members_before_crc_v1"
 SENSITIVE_REDIRECT_HEADERS = {"authorization", "x-github-api-version"}
 
 
@@ -76,27 +80,50 @@ def request_json(url, token):
         return json.load(response)
 
 
-def inspect_zip(path):
-    """Read every member and return deterministic structural/CRC evidence."""
+def inspect_zip(
+    path,
+    max_uncompressed_bytes=MAX_ZIP_UNCOMPRESSED_BYTES,
+    max_members=MAX_ZIP_MEMBERS,
+    max_compression_ratio=MAX_ZIP_COMPRESSION_RATIO,
+):
+    """Reject expansion hazards before reading members, then verify every CRC."""
     try:
         with zipfile.ZipFile(path) as archive:
             members = archive.infolist()
             if not members:
                 raise ValueError("artifact_zip_has_no_members")
+            if len(members) > max_members:
+                raise ValueError("artifact_zip_too_many_members")
+
+            total_uncompressed = 0
+            for member in members:
+                if member.flag_bits & 0x1:
+                    raise ValueError(f"artifact_zip_encrypted_member:{member.filename}")
+                total_uncompressed += member.file_size
+                if total_uncompressed > max_uncompressed_bytes:
+                    raise ValueError("artifact_zip_uncompressed_too_large")
+                if member.file_size:
+                    if member.compress_size <= 0:
+                        raise ValueError(f"artifact_zip_extreme_compression:{member.filename}")
+                    ratio = member.file_size / member.compress_size
+                    if ratio > max_compression_ratio:
+                        raise ValueError(f"artifact_zip_extreme_compression:{member.filename}")
+
             corrupt = archive.testzip()
             if corrupt is not None:
                 raise ValueError(f"artifact_zip_crc_failure:{corrupt}")
             return {
                 "zip_member_count": len(members),
-                "zip_uncompressed_bytes": sum(member.file_size for member in members),
+                "zip_uncompressed_bytes": total_uncompressed,
                 "zip_crc_verified": True,
+                "zip_safety_policy": ZIP_SAFETY_POLICY,
             }
     except zipfile.BadZipFile as exc:
         raise ValueError("artifact_not_valid_zip") from exc
 
 
 def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES, opener=None):
-    """Atomically persist a bounded, CRC-valid artifact and return its byte identity."""
+    """Atomically persist a bounded, structurally safe artifact and return its identity."""
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
@@ -205,7 +232,7 @@ def main():
     identity = download(artifact["archive_download_url"], args.token, args.out)
     report = {
         "status": "downloaded",
-        "schema_version": 4,
+        "schema_version": 5,
         "artifact_id": artifact["id"],
         "workflow_run_id": (artifact.get("workflow_run") or {}).get("id"),
         "created_at": artifact.get("created_at"),
