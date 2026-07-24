@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and securely extract a prospective GitHub Actions artifact ZIP."""
+"""Validate and crash-safely restore a prospective GitHub Actions artifact ZIP."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ from pathlib import Path, PurePosixPath
 MAX_TOTAL_BYTES = 200 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 200.0
 ALLOWED_ROOTS = {"data", "reports"}
+BACKUP_PREFIX = ".crossvenue-restore-backup."
+STAGE_PREFIX = ".crossvenue-restore-stage."
+JOURNAL_NAME = "journal.json"
 
 
 def _safe_name(raw: str) -> str:
@@ -34,6 +37,91 @@ def _read_bundle(zip_path: Path) -> bytes:
     if len(raw) > MAX_TOTAL_BYTES:
         raise ValueError("compressed_bundle_too_large")
     return raw
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_journal(backup_root: Path, journal: dict) -> None:
+    path = backup_root / JOURNAL_NAME
+    temporary = backup_root / f".{JOURNAL_NAME}.tmp"
+    with temporary.open("w", encoding="utf-8") as output:
+        json.dump(journal, output, sort_keys=True)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+    _fsync_directory(backup_root)
+
+
+def _load_journal(backup_root: Path) -> dict:
+    path = backup_root / JOURNAL_NAME
+    try:
+        journal = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"unrecoverable_restore_journal:{backup_root.name}:{exc}") from exc
+    if journal.get("schema_version") != 1 or journal.get("state") not in {"prepared", "committed"}:
+        raise RuntimeError(f"invalid_restore_journal:{backup_root.name}")
+    entries = journal.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise RuntimeError(f"invalid_restore_journal_entries:{backup_root.name}")
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("existed"), bool):
+            raise RuntimeError(f"invalid_restore_journal_entry:{backup_root.name}")
+        entry["name"] = _safe_name(str(entry.get("name", "")))
+    return journal
+
+
+def _rollback_transaction(destination: Path, backup_root: Path, journal: dict) -> None:
+    errors: list[str] = []
+    for entry in reversed(journal["entries"]):
+        name = entry["name"]
+        target = destination / name
+        backup = backup_root / name
+        try:
+            if entry["existed"]:
+                if backup.exists():
+                    if target.exists():
+                        target.unlink()
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(backup, target)
+                    _fsync_directory(target.parent)
+            elif target.exists():
+                target.unlink()
+                _fsync_directory(target.parent)
+        except OSError as exc:
+            errors.append(f"{name}:{exc}")
+    if errors:
+        raise RuntimeError("restore_rollback_failed:" + "|".join(errors))
+    shutil.rmtree(backup_root)
+    _fsync_directory(destination)
+
+
+def recover_interrupted_restores(destination: Path) -> int:
+    """Recover incomplete transactions before any new artifact is inspected."""
+    if not destination.exists():
+        return 0
+    recovered = 0
+    for stage_root in sorted(destination.glob(f"{STAGE_PREFIX}*")):
+        if stage_root.is_dir():
+            shutil.rmtree(stage_root)
+            recovered += 1
+    for backup_root in sorted(destination.glob(f"{BACKUP_PREFIX}*")):
+        if not backup_root.is_dir():
+            continue
+        journal = _load_journal(backup_root)
+        if journal["state"] == "committed":
+            shutil.rmtree(backup_root)
+            _fsync_directory(destination)
+        else:
+            _rollback_transaction(destination, backup_root, journal)
+        recovered += 1
+    return recovered
 
 
 def _inspect_archive(archive: zipfile.ZipFile, required: set[str]) -> tuple[dict, list[zipfile.ZipInfo]]:
@@ -66,7 +154,7 @@ def _inspect_archive(archive: zipfile.ZipFile, required: set[str]) -> tuple[dict
         raise ValueError("missing_required:" + ",".join(missing))
     return {
         "status": "VALID",
-        "schema_version": 3,
+        "schema_version": 4,
         "member_count": len(members),
         "total_uncompressed_bytes": total,
         "members": dict(sorted(members.items())),
@@ -112,44 +200,43 @@ def _stage_members(
 
 
 def _commit_staged_members(stage_root: Path, destination: Path, names: list[str]) -> None:
-    backup_root = Path(tempfile.mkdtemp(prefix=".crossvenue-restore-backup.", dir=destination))
-    replaced: list[tuple[Path, Path | None]] = []
+    backup_root = Path(tempfile.mkdtemp(prefix=BACKUP_PREFIX, dir=destination))
+    journal = {
+        "schema_version": 1,
+        "state": "prepared",
+        "entries": [
+            {"name": name, "existed": (destination / name).exists()}
+            for name in names
+        ],
+    }
+    _write_journal(backup_root, journal)
     try:
-        for name in names:
+        for entry in journal["entries"]:
+            name = entry["name"]
             target = destination / name
             staged = stage_root / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            backup: Path | None = None
-            if target.exists():
-                backup = backup_root / name
+            backup = backup_root / name
+            if entry["existed"]:
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(target, backup)
-            try:
-                os.replace(staged, target)
-            except Exception:
-                if backup is not None:
-                    os.replace(backup, target)
-                raise
-            replaced.append((target, backup))
+                _fsync_directory(target.parent)
+            os.replace(staged, target)
+            _fsync_directory(target.parent)
+        journal["state"] = "committed"
+        _write_journal(backup_root, journal)
     except Exception:
-        for target, backup in reversed(replaced):
-            try:
-                if target.exists():
-                    target.unlink()
-                if backup is not None and backup.exists():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(backup, target)
-            except OSError:
-                pass
+        _rollback_transaction(destination, backup_root, journal)
         raise
-    finally:
-        shutil.rmtree(backup_root, ignore_errors=True)
+    shutil.rmtree(backup_root)
+    _fsync_directory(destination)
 
 
 def extract_bundle(zip_path: Path, destination: Path, required: set[str]) -> dict:
-    raw = _read_bundle(zip_path)
     destination.mkdir(parents=True, exist_ok=True)
-    stage_root = Path(tempfile.mkdtemp(prefix=".crossvenue-restore-stage.", dir=destination))
+    recovered = recover_interrupted_restores(destination)
+    raw = _read_bundle(zip_path)
+    stage_root = Path(tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=destination))
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             report, files = _inspect_archive(archive, required)
@@ -158,7 +245,8 @@ def extract_bundle(zip_path: Path, destination: Path, required: set[str]) -> dic
     finally:
         shutil.rmtree(stage_root, ignore_errors=True)
     report["zip_sha256"] = hashlib.sha256(raw).hexdigest()
-    report["extraction"] = "transactional_bundle_replace"
+    report["extraction"] = "crash_recoverable_transactional_bundle_replace"
+    report["recovered_interrupted_transactions"] = recovered
     return report
 
 
@@ -172,8 +260,8 @@ def main() -> int:
     required = {_safe_name(name) for name in args.required_member}
     try:
         report = extract_bundle(args.zip_path, args.destination, required)
-    except (OSError, zipfile.BadZipFile, ValueError) as exc:
-        report = {"status": "INVALID", "schema_version": 3, "error": str(exc)}
+    except (OSError, RuntimeError, zipfile.BadZipFile, ValueError) as exc:
+        report = {"status": "INVALID", "schema_version": 4, "error": str(exc)}
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
