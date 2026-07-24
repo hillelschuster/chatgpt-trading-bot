@@ -38,6 +38,21 @@ class HealthWorkflowTests(unittest.TestCase):
         self.assertLess(summary_index, gate_index)
         self.assertLess(gate_index, upload_index)
 
+    def test_all_report_producers_continue_to_final_gate(self):
+        text = WORKFLOW.read_text()
+        for command in (
+            "--out reports/crossvenue_snapshot_health.json || true",
+            "--out reports/crossvenue_snapshot_binding.json || true",
+            "--out reports/crossvenue_actions_health.json || true",
+            "--out reports/crossvenue_actions_binding.json || true",
+            "python crossvenue_health.py --out reports/crossvenue_health.json || true",
+        ):
+            self.assertIn(command, text)
+        self.assertNotIn(
+            'if report["status"] == "INVALID":\n              raise SystemExit(1)',
+            text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
