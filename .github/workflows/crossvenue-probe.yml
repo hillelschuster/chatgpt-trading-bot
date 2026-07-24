@@ -18,6 +18,7 @@ on:
       - "crossvenue_coverage.py"
       - "crossvenue_promote.py"
       - "crossvenue_artifact.py"
+      - "crossvenue_artifact_binding.py"
       - "crossvenue_bundle.py"
       - "test_crossvenue_snapshot.py"
       - "test_crossvenue_events.py"
@@ -28,6 +29,7 @@ on:
       - "test_crossvenue_validate.py"
       - "test_crossvenue_coverage.py"
       - "test_crossvenue_artifact.py"
+      - "test_crossvenue_artifact_download.py"
       - "test_crossvenue_bundle.py"
       - "test_crossvenue_bundle_journal.py"
       - "CROSS_VENUE_EXPERIMENT.md"
@@ -56,18 +58,20 @@ jobs:
           test_crossvenue_chain.py test_crossvenue_pnl.py
           test_crossvenue_freeze.py test_crossvenue_validate.py
           test_crossvenue_coverage.py test_crossvenue_artifact.py
-          test_crossvenue_bundle.py test_crossvenue_bundle_journal.py
+          test_crossvenue_artifact_download.py test_crossvenue_bundle.py
+          test_crossvenue_bundle_journal.py
       - run: >-
           python -m py_compile crossvenue_snapshot.py crossvenue_events.py
           crossvenue_settlements.py crossvenue_chain.py crossvenue_pnl.py
           crossvenue_freeze.py crossvenue_validate.py crossvenue_coverage.py
-          crossvenue_promote.py crossvenue_artifact.py crossvenue_bundle.py
+          crossvenue_promote.py crossvenue_artifact.py
+          crossvenue_artifact_binding.py crossvenue_bundle.py
           test_crossvenue_snapshot.py test_crossvenue_events.py
           test_crossvenue_settlements.py test_crossvenue_chain.py
           test_crossvenue_pnl.py test_crossvenue_freeze.py
           test_crossvenue_validate.py test_crossvenue_coverage.py
-          test_crossvenue_artifact.py test_crossvenue_bundle.py
-          test_crossvenue_bundle_journal.py
+          test_crossvenue_artifact.py test_crossvenue_artifact_download.py
+          test_crossvenue_bundle.py test_crossvenue_bundle_journal.py
       - name: Restore latest approved successful prospective series
         if: github.event_name != 'pull_request'
         env:
@@ -77,8 +81,13 @@ jobs:
           python crossvenue_artifact.py --repository "$GITHUB_REPOSITORY" \
             --artifact-name crossvenue-series --branch main \
             --workflow-path .github/workflows/crossvenue-probe.yml \
-            --out /tmp/previous.zip
+            --out /tmp/previous.zip \
+            --report reports/crossvenue_restoration.json
           if [ -s /tmp/previous.zip ]; then
+            python crossvenue_artifact_binding.py \
+              --archive /tmp/previous.zip \
+              --restoration reports/crossvenue_restoration.json \
+              --out reports/crossvenue_artifact_binding.json
             python crossvenue_bundle.py /tmp/previous.zip --destination . \
               --report reports/crossvenue_restore_bundle.json \
               --required-member data/crossvenue_experiment_freeze.json \
@@ -166,6 +175,8 @@ jobs:
             data/crossvenue_pnl_events.jsonl
             data/crossvenue_validation_base_ledger.jsonl
             data/crossvenue_validation_stress_ledger.jsonl
+            reports/crossvenue_restoration.json
+            reports/crossvenue_artifact_binding.json
             reports/crossvenue_restore_bundle.json
             reports/crossvenue_freeze.json
             reports/crossvenue_continuity.json
