@@ -26,6 +26,11 @@ def as_int(value, default=0):
     return default if value is None else int(value)
 
 
+def first_slot_after_cutoff(cutoff_ms, cadence_ms=CADENCE_MS):
+    """Return the first cadence slot whose observations must be strictly post-cutoff."""
+    return (int(cutoff_ms) // cadence_ms + 1) * cadence_ms
+
+
 def boundary_key(row):
     hl = row.get("hyperliquid") or {}
     okx = row.get("okx_swap") or {}
@@ -42,19 +47,25 @@ def coverage(snapshots, events, freeze, coins=("BTC", "ETH"), cadence_ms=CADENCE
     keys = [(as_int(r.get("cadence_slot_ms"), -1), str(r.get("coin") or "").upper()) for r in rows]
     duplicate_rows = len(keys) - len(set(keys))
     slots = sorted({slot for slot, _ in keys if slot >= 0})
-    first_slot = slots[0] if slots else None
+    required_first_slot = first_slot_after_cutoff(cutoff, cadence_ms)
+    first_observed_slot = slots[0] if slots else None
     last_slot = slots[-1] if slots else None
-    expected_slots = ((last_slot - first_slot) // cadence_ms + 1) if slots else 0
+    expected_slots = ((last_slot - required_first_slot) // cadence_ms + 1
+                      if last_slot is not None and last_slot >= required_first_slot else 0)
+    leading_missing_slots = (max(0, (first_observed_slot - required_first_slot) // cadence_ms)
+                             if first_observed_slot is not None else 0)
     by_slot = defaultdict(set)
     for slot, coin in keys:
-        if slot >= 0:
+        if slot >= required_first_slot:
             by_slot[slot].add(coin)
-    observed_coin_slots = len({key for key in keys if key[0] >= 0})
+    observed_coin_slots = len({key for key in keys if key[0] >= required_first_slot})
     expected_coin_slots = expected_slots * len(expected_coins)
-    complete_slots = sum(by_slot[slot] == expected_coins for slot in slots)
+    complete_slots = sum(by_slot[slot] == expected_coins for slot in slots
+                         if slot >= required_first_slot)
     slot_coverage = observed_coin_slots / expected_coin_slots if expected_coin_slots else 0.0
     complete_slot_coverage = complete_slots / expected_slots if expected_slots else 0.0
-    span_days = ((last_slot - first_slot) / DAY_MS) if len(slots) > 1 else 0.0
+    span_days = ((last_slot - required_first_slot) / DAY_MS
+                 if last_slot is not None and last_slot > required_first_slot else 0.0)
 
     opportunities = set()
     for row in rows:
@@ -79,10 +90,13 @@ def coverage(snapshots, events, freeze, coins=("BTC", "ETH"), cadence_ms=CADENCE
                      "minimum_slot_coverage": MIN_SLOT_COVERAGE,
                      "minimum_complete_slot_coverage": MIN_COMPLETE_SLOT_COVERAGE,
                      "minimum_event_accounting": MIN_EVENT_ACCOUNTING,
+                     "coverage_window_start": "first cadence slot strictly after immutable evidence cutoff",
                      "coins": sorted(expected_coins)},
-        "evidence_cutoff_ms": cutoff, "first_slot_ms": first_slot, "last_slot_ms": last_slot,
+        "evidence_cutoff_ms": cutoff, "required_first_slot_ms": required_first_slot,
+        "first_slot_ms": first_observed_slot, "last_slot_ms": last_slot,
+        "leading_missing_slots": leading_missing_slots,
         "collection_span_days": span_days, "rows": len(rows), "duplicate_rows": duplicate_rows,
-        "expected_slots": expected_slots, "observed_slots": len(slots),
+        "expected_slots": expected_slots, "observed_slots": len([s for s in slots if s >= required_first_slot]),
         "complete_slots": complete_slots, "slot_coverage": slot_coverage,
         "complete_slot_coverage": complete_slot_coverage,
         "eligible_event_opportunities": len(opportunities), "accounted_events": accounted,
