@@ -24,10 +24,11 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m unittest -v test_crossvenue_health.py
-          test_crossvenue_artifact.py test_crossvenue_actions_health.py
-          test_crossvenue_scheduler_health.py
+          test_crossvenue_snapshot_health.py test_crossvenue_artifact.py
+          test_crossvenue_actions_health.py test_crossvenue_scheduler_health.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
+          crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
           crossvenue_artifact.py test_crossvenue_artifact.py
           crossvenue_actions_health.py test_crossvenue_actions_health.py
           crossvenue_scheduler_health.py test_crossvenue_scheduler_health.py
@@ -41,6 +42,11 @@ jobs:
             --workflow-path .github/workflows/crossvenue-probe.yml \
             --out /tmp/series.zip --required | tee reports/crossvenue_restoration.json
           unzip -o /tmp/series.zip -d .
+      - name: Audit recent snapshot payload and timestamp integrity
+        run: >-
+          python crossvenue_snapshot_health.py
+          --snapshots data/crossvenue_snapshots.jsonl
+          --out reports/crossvenue_snapshot_health.json
       - name: Audit collector workflow execution health
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,6 +76,7 @@ jobs:
           path: |
             reports/crossvenue_restoration.json
             reports/crossvenue_workflow_runs.json
+            reports/crossvenue_snapshot_health.json
             reports/crossvenue_actions_health.json
             reports/crossvenue_health.json
           retention-days: 30
