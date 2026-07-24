@@ -27,6 +27,7 @@ jobs:
           test_crossvenue_snapshot_health.py test_crossvenue_snapshot_binding.py
           test_crossvenue_artifact.py test_crossvenue_actions_health.py
           test_crossvenue_scheduler_health.py test_crossvenue_actions_binding.py
+          test_crossvenue_actions_gate.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
@@ -35,6 +36,7 @@ jobs:
           crossvenue_actions_health.py test_crossvenue_actions_health.py
           crossvenue_scheduler_health.py test_crossvenue_scheduler_health.py
           crossvenue_actions_binding.py test_crossvenue_actions_binding.py
+          crossvenue_actions_gate.py test_crossvenue_actions_gate.py
       - name: Download latest approved successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,8 +95,14 @@ jobs:
           --restoration reports/crossvenue_restoration.json
           --actions-report reports/crossvenue_actions_health.json
           --out reports/crossvenue_actions_binding.json
-      - name: Summarize evidence health
-        run: python crossvenue_health.py --out reports/crossvenue_health.json
+      - name: Summarize and bind authoritative evidence health
+        run: |
+          python crossvenue_health.py --out reports/crossvenue_health.json
+          python crossvenue_actions_gate.py \
+            --health-report reports/crossvenue_health.json \
+            --binding reports/crossvenue_actions_binding.json \
+            --runs reports/crossvenue_workflow_runs.json \
+            --restoration reports/crossvenue_restoration.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
