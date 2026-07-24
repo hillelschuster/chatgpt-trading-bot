@@ -43,6 +43,9 @@ class HealthTest(unittest.TestCase):
             "active": {"count": 0}, "failures": {"consecutive": 0},
             "restoration": {"workflow_run_id": 10, "matches_latest_success": True},
             "blockers": []})
+        write_json(reports / "crossvenue_snapshot_health.json", {
+            "status": "HEALTHY", "healthy": True, "recent_rows": 2,
+            "invalid_rows": 0, "duplicate_rows": 0, "blockers": []})
         write_json(reports / "crossvenue_chain.json", {"valid": True, "errors": []})
         write_json(reports / "crossvenue_coverage.json", {
             "status": "COLLECTING", "collection_span_days": 1,
@@ -62,6 +65,8 @@ class HealthTest(unittest.TestCase):
             self.assertFalse(result["integrity"]["blockers"])
             self.assertTrue(result["integrity"]["required_data_present"])
             self.assertTrue(result["integrity"]["required_reports_present"])
+            self.assertTrue(result["integrity"]["snapshot_health_valid"])
+            self.assertEqual("HEALTHY", result["collection"]["snapshot_integrity"]["status"])
             self.assertEqual("HEALTHY", result["operations"]["status"])
             self.assertTrue(result["operations"]["restoration"]["matches_latest_success"])
             self.assertEqual("WARMING_UP", result["collection"]["recent_cadence"]["status"])
@@ -93,6 +98,41 @@ class HealthTest(unittest.TestCase):
             self.assertEqual("INVALID", result["status"])
             self.assertIn("collector_workflow_unhealthy", result["integrity"]["blockers"])
             self.assertEqual(["successful_run_stale"], result["operations"]["blockers"])
+
+    def test_invalid_snapshot_payload_report_fails_combined_health_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            write_json(reports / "crossvenue_snapshot_health.json", {
+                "status": "INVALID", "healthy": False, "recent_rows": 2,
+                "invalid_rows": 1, "duplicate_rows": 0,
+                "blockers": ["recent_snapshot_payload_invalid"]})
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("snapshot_payload_unhealthy", result["integrity"]["blockers"])
+            self.assertEqual(["recent_snapshot_payload_invalid"],
+                             result["integrity"]["snapshot_health_blockers"])
+            self.assertEqual(1, result["collection"]["snapshot_integrity"]["invalid_rows"])
+
+    def test_missing_snapshot_payload_report_fails_combined_health_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            (reports / "crossvenue_snapshot_health.json").unlink()
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("required_reports_missing", result["integrity"]["blockers"])
+            self.assertIn("snapshot_health_missing", result["integrity"]["blockers"])
+            self.assertEqual(["crossvenue_snapshot_health.json"],
+                             result["integrity"]["missing_reports"])
+
+    def test_snapshot_status_cannot_claim_healthy_with_false_boolean(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            write_json(reports / "crossvenue_snapshot_health.json", {
+                "status": "HEALTHY", "healthy": False, "recent_rows": 2,
+                "invalid_rows": 0, "duplicate_rows": 0, "blockers": []})
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("snapshot_payload_unhealthy", result["integrity"]["blockers"])
 
     def test_missing_actions_health_fails_closed(self):
         with tempfile.TemporaryDirectory() as root:
