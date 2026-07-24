@@ -1,9 +1,11 @@
 import hashlib
+import os
 import stat
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from crossvenue_bundle import extract_bundle, inspect_bundle
 
@@ -16,7 +18,7 @@ class BundleTests(unittest.TestCase):
                 archive.writestr(name, payload)
         return path
 
-    def test_valid_bundle_is_atomically_extracted_and_content_bound(self):
+    def test_valid_bundle_is_transactionally_extracted_and_content_bound(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             snapshots = b"{}\n"
@@ -28,28 +30,83 @@ class BundleTests(unittest.TestCase):
             out = root / "out"
             report = extract_bundle(bundle, out, {"data/crossvenue_snapshots.jsonl"})
             self.assertEqual(report["status"], "VALID")
-            self.assertEqual(report["schema_version"], 2)
+            self.assertEqual(report["schema_version"], 3)
             self.assertEqual(report["member_count"], 2)
-            self.assertEqual(report["extraction"], "atomic_member_replace")
+            self.assertEqual(report["extraction"], "transactional_bundle_replace")
             self.assertEqual(
                 report["members"]["data/crossvenue_snapshots.jsonl"]["sha256"],
                 hashlib.sha256(snapshots).hexdigest(),
             )
             self.assertEqual((out / "data/crossvenue_snapshots.jsonl").read_bytes(), snapshots)
             self.assertEqual((out / "data/crossvenue_snapshots.jsonl").stat().st_mode & 0o777, 0o600)
-            self.assertFalse(list((out / "data").glob(".crossvenue_snapshots.jsonl.*")))
+            self.assertFalse(list(out.glob(".crossvenue-restore-*")))
 
-    def test_existing_target_is_replaced_only_after_complete_member_read(self):
+    def test_existing_targets_are_replaced_after_all_members_are_staged(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bundle = self.make_zip(root, [("data/value", b"new")])
+            bundle = self.make_zip(root, [("data/one", b"new1"), ("reports/two", b"new2")])
             out = root / "out"
-            target = out / "data/value"
-            target.parent.mkdir(parents=True)
-            target.write_bytes(b"old")
-            report = extract_bundle(bundle, out, {"data/value"})
+            first = out / "data/one"
+            second = out / "reports/two"
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            first.write_bytes(b"old1")
+            second.write_bytes(b"old2")
+            report = extract_bundle(bundle, out, {"data/one", "reports/two"})
             self.assertEqual(report["status"], "VALID")
-            self.assertEqual(target.read_bytes(), b"new")
+            self.assertEqual(first.read_bytes(), b"new1")
+            self.assertEqual(second.read_bytes(), b"new2")
+
+    def test_commit_failure_rolls_back_every_previously_replaced_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = self.make_zip(root, [("data/one", b"new1"), ("reports/two", b"new2")])
+            out = root / "out"
+            first = out / "data/one"
+            second = out / "reports/two"
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            first.write_bytes(b"old1")
+            second.write_bytes(b"old2")
+            real_replace = os.replace
+
+            def fail_second_stage(src, dst):
+                src_path = Path(src)
+                dst_path = Path(dst)
+                if ".crossvenue-restore-stage." in str(src_path) and dst_path == second:
+                    raise OSError("injected_commit_failure")
+                return real_replace(src, dst)
+
+            with mock.patch("crossvenue_bundle.os.replace", side_effect=fail_second_stage):
+                with self.assertRaisesRegex(OSError, "injected_commit_failure"):
+                    extract_bundle(bundle, out, {"data/one", "reports/two"})
+
+            self.assertEqual(first.read_bytes(), b"old1")
+            self.assertEqual(second.read_bytes(), b"old2")
+            self.assertFalse(list(out.glob(".crossvenue-restore-*")))
+
+    def test_commit_failure_removes_new_targets_created_before_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = self.make_zip(root, [("data/one", b"new1"), ("reports/two", b"new2")])
+            out = root / "out"
+            second = out / "reports/two"
+            real_replace = os.replace
+
+            def fail_second_stage(src, dst):
+                src_path = Path(src)
+                dst_path = Path(dst)
+                if ".crossvenue-restore-stage." in str(src_path) and dst_path == second:
+                    raise OSError("injected_commit_failure")
+                return real_replace(src, dst)
+
+            with mock.patch("crossvenue_bundle.os.replace", side_effect=fail_second_stage):
+                with self.assertRaisesRegex(OSError, "injected_commit_failure"):
+                    extract_bundle(bundle, out, set())
+
+            self.assertFalse((out / "data/one").exists())
+            self.assertFalse(second.exists())
+            self.assertFalse(list(out.glob(".crossvenue-restore-*")))
 
     def test_path_traversal_is_rejected_before_extraction(self):
         with tempfile.TemporaryDirectory() as tmp:
