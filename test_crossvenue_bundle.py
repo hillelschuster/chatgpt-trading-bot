@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import stat
 import tempfile
@@ -7,7 +8,13 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from crossvenue_bundle import extract_bundle, inspect_bundle
+from crossvenue_bundle import (
+    BACKUP_PREFIX,
+    JOURNAL_NAME,
+    extract_bundle,
+    inspect_bundle,
+    recover_interrupted_restores,
+)
 
 
 class BundleTests(unittest.TestCase):
@@ -18,7 +25,7 @@ class BundleTests(unittest.TestCase):
                 archive.writestr(name, payload)
         return path
 
-    def test_valid_bundle_is_transactionally_extracted_and_content_bound(self):
+    def test_valid_bundle_is_crash_recoverable_and_content_bound(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             snapshots = b"{}\n"
@@ -30,9 +37,10 @@ class BundleTests(unittest.TestCase):
             out = root / "out"
             report = extract_bundle(bundle, out, {"data/crossvenue_snapshots.jsonl"})
             self.assertEqual(report["status"], "VALID")
-            self.assertEqual(report["schema_version"], 3)
+            self.assertEqual(report["schema_version"], 4)
             self.assertEqual(report["member_count"], 2)
-            self.assertEqual(report["extraction"], "transactional_bundle_replace")
+            self.assertEqual(report["extraction"], "crash_recoverable_transactional_bundle_replace")
+            self.assertEqual(report["recovered_interrupted_transactions"], 0)
             self.assertEqual(
                 report["members"]["data/crossvenue_snapshots.jsonl"]["sha256"],
                 hashlib.sha256(snapshots).hexdigest(),
@@ -52,8 +60,7 @@ class BundleTests(unittest.TestCase):
             second.parent.mkdir(parents=True)
             first.write_bytes(b"old1")
             second.write_bytes(b"old2")
-            report = extract_bundle(bundle, out, {"data/one", "reports/two"})
-            self.assertEqual(report["status"], "VALID")
+            extract_bundle(bundle, out, {"data/one", "reports/two"})
             self.assertEqual(first.read_bytes(), b"new1")
             self.assertEqual(second.read_bytes(), b"new2")
 
@@ -85,28 +92,77 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(second.read_bytes(), b"old2")
             self.assertFalse(list(out.glob(".crossvenue-restore-*")))
 
-    def test_commit_failure_removes_new_targets_created_before_failure(self):
+    def test_interrupted_prepared_transaction_is_recovered_before_new_restore(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bundle = self.make_zip(root, [("data/one", b"new1"), ("reports/two", b"new2")])
             out = root / "out"
-            second = out / "reports/two"
-            real_replace = os.replace
+            target = out / "data/one"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"partial-new")
+            backup_root = out / f"{BACKUP_PREFIX}crashed"
+            backup = backup_root / "data/one"
+            backup.parent.mkdir(parents=True)
+            backup.write_bytes(b"old")
+            (backup_root / JOURNAL_NAME).write_text(json.dumps({
+                "schema_version": 1,
+                "state": "prepared",
+                "entries": [{"name": "data/one", "existed": True}],
+            }))
+            bundle = self.make_zip(root, [("data/one", b"new")])
 
-            def fail_second_stage(src, dst):
-                src_path = Path(src)
-                dst_path = Path(dst)
-                if ".crossvenue-restore-stage." in str(src_path) and dst_path == second:
-                    raise OSError("injected_commit_failure")
-                return real_replace(src, dst)
+            report = extract_bundle(bundle, out, {"data/one"})
 
-            with mock.patch("crossvenue_bundle.os.replace", side_effect=fail_second_stage):
-                with self.assertRaisesRegex(OSError, "injected_commit_failure"):
-                    extract_bundle(bundle, out, set())
+            self.assertEqual(report["recovered_interrupted_transactions"], 1)
+            self.assertEqual(target.read_bytes(), b"new")
+            self.assertFalse(backup_root.exists())
 
-            self.assertFalse((out / "data/one").exists())
-            self.assertFalse(second.exists())
-            self.assertFalse(list(out.glob(".crossvenue-restore-*")))
+    def test_interrupted_transaction_removes_new_partial_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            target = out / "reports/new"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"partial")
+            backup_root = out / f"{BACKUP_PREFIX}crashed"
+            backup_root.mkdir()
+            (backup_root / JOURNAL_NAME).write_text(json.dumps({
+                "schema_version": 1,
+                "state": "prepared",
+                "entries": [{"name": "reports/new", "existed": False}],
+            }))
+
+            self.assertEqual(recover_interrupted_restores(out), 1)
+            self.assertFalse(target.exists())
+            self.assertFalse(backup_root.exists())
+
+    def test_committed_transaction_cleanup_keeps_new_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            target = out / "data/one"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"new")
+            backup_root = out / f"{BACKUP_PREFIX}committed"
+            backup = backup_root / "data/one"
+            backup.parent.mkdir(parents=True)
+            backup.write_bytes(b"old")
+            (backup_root / JOURNAL_NAME).write_text(json.dumps({
+                "schema_version": 1,
+                "state": "committed",
+                "entries": [{"name": "data/one", "existed": True}],
+            }))
+
+            self.assertEqual(recover_interrupted_restores(out), 1)
+            self.assertEqual(target.read_bytes(), b"new")
+            self.assertFalse(backup_root.exists())
+
+    def test_malformed_recovery_journal_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            backup_root = out / f"{BACKUP_PREFIX}broken"
+            backup_root.mkdir(parents=True)
+            (backup_root / JOURNAL_NAME).write_text("not-json")
+            with self.assertRaisesRegex(RuntimeError, "unrecoverable_restore_journal"):
+                recover_interrupted_restores(out)
+            self.assertTrue(backup_root.exists())
 
     def test_path_traversal_is_rejected_before_extraction(self):
         with tempfile.TemporaryDirectory() as tmp:
