@@ -52,13 +52,13 @@ jobs:
         run: >-
           python crossvenue_snapshot_health.py
           --snapshots data/crossvenue_snapshots.jsonl
-          --out reports/crossvenue_snapshot_health.json
+          --out reports/crossvenue_snapshot_health.json || true
       - name: Bind snapshot audit to exact restored evidence
         run: >-
           python crossvenue_snapshot_binding.py
           --snapshots data/crossvenue_snapshots.jsonl
           --snapshot-report reports/crossvenue_snapshot_health.json
-          --out reports/crossvenue_snapshot_binding.json
+          --out reports/crossvenue_snapshot_binding.json || true
       - name: Fetch collector runs once for reproducible operational audit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,26 +80,25 @@ jobs:
               json.dumps(report, indent=2, allow_nan=False) + "\n"
           )
           print(json.dumps(report, indent=2, allow_nan=False))
-          if report["status"] == "INVALID":
-              raise SystemExit(1)
           PY
       - name: Replace mixed-event cadence with schedule-only audit
         run: >-
           python crossvenue_scheduler_health.py
           --runs reports/crossvenue_workflow_runs.json
           --actions-report reports/crossvenue_actions_health.json
-          --out reports/crossvenue_actions_health.json
+          --out reports/crossvenue_actions_health.json || true
       - name: Bind Actions audit to exact saved inputs
         run: >-
           python crossvenue_actions_binding.py
           --runs reports/crossvenue_workflow_runs.json
           --restoration reports/crossvenue_restoration.json
           --actions-report reports/crossvenue_actions_health.json
-          --out reports/crossvenue_actions_binding.json
+          --out reports/crossvenue_actions_binding.json || true
       - name: Summarize and bind authoritative evidence health
         run: |
-          # The base summary may be INVALID. Continue so the final gate always
-          # binds that verdict to exact operational evidence before upload.
+          # Every audit producer writes its report even when invalid. Only this
+          # exact-evidence gate decides the job result, so uploaded health is
+          # always complete and authoritative rather than a partial pre-gate file.
           python crossvenue_health.py --out reports/crossvenue_health.json || true
           python crossvenue_actions_gate.py \
             --health-report reports/crossvenue_health.json \
