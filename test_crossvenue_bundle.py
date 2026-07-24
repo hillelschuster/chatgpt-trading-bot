@@ -202,6 +202,21 @@ class BundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symlink_member"):
                 inspect_bundle(path, set())
 
+    def test_symlink_destination_root_is_rejected_before_staging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            out = root / "out"
+            out.symlink_to(outside, target_is_directory=True)
+            bundle = self.make_zip(root, [("data/one", b"new")])
+
+            with self.assertRaisesRegex(RuntimeError, "symlink_restore_destination"):
+                extract_bundle(bundle, out, {"data/one"})
+
+            self.assertFalse(list(outside.glob(".crossvenue-restore-*")))
+            self.assertFalse((outside / "data/one").exists())
+
     def test_symlink_destination_parent_is_rejected_without_external_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
