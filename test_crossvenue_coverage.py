@@ -1,6 +1,6 @@
 import unittest
 
-from crossvenue_coverage import CADENCE_MS, DAY_MS, coverage
+from crossvenue_coverage import CADENCE_MS, DAY_MS, coverage, first_slot_after_cutoff
 from crossvenue_promote import promote
 
 
@@ -18,35 +18,60 @@ def event(coin, boundary):
 
 
 class CoverageTest(unittest.TestCase):
+    def test_first_required_slot_is_strictly_after_cutoff(self):
+        self.assertEqual(CADENCE_MS, first_slot_after_cutoff(0))
+        self.assertEqual(2 * CADENCE_MS, first_slot_after_cutoff(CADENCE_MS))
+        self.assertEqual(2 * CADENCE_MS, first_slot_after_cutoff(CADENCE_MS + 1))
+
     def test_complete_56_day_series_passes(self):
         rows = []
+        cutoff = -1
+        first = first_slot_after_cutoff(cutoff)
         slots = 56 * 24 * 12 + 1
         boundary = 60 * DAY_MS
         for i in range(slots):
-            slot = i * CADENCE_MS
+            slot = first + i * CADENCE_MS
             rows.extend([snapshot(slot, "BTC", boundary, boundary),
                          snapshot(slot, "ETH", boundary, boundary)])
         report = coverage(rows, [event("BTC", boundary), event("ETH", boundary)],
-                          {"evidence_cutoff_ms": -1})
+                          {"evidence_cutoff_ms": cutoff})
         self.assertEqual("PASS", report["status"])
         self.assertEqual(1.0, report["slot_coverage"])
         self.assertEqual(1.0, report["event_accounting"])
 
     def test_missing_slots_fail_after_span_matures(self):
         rows = []
+        cutoff = -1
+        first = first_slot_after_cutoff(cutoff)
         slots = 56 * 24 * 12 + 1
         for i in range(slots):
             if i not in (0, slots - 1) and i % 10 == 0:
                 continue
-            slot = i * CADENCE_MS
+            slot = first + i * CADENCE_MS
             rows.extend([snapshot(slot, "BTC"), snapshot(slot, "ETH")])
-        report = coverage(rows, [], {"evidence_cutoff_ms": -1})
+        report = coverage(rows, [], {"evidence_cutoff_ms": cutoff})
         self.assertEqual("INVALID", report["status"])
         self.assertLess(report["slot_coverage"], 0.95)
 
+    def test_leading_post_freeze_outage_is_counted(self):
+        cutoff = 10 * CADENCE_MS + 1
+        required = first_slot_after_cutoff(cutoff)
+        delayed = required + 1_000 * CADENCE_MS
+        last = required + 56 * DAY_MS
+        rows = []
+        for slot in range(delayed, last + 1, CADENCE_MS):
+            rows.extend([snapshot(slot, "BTC"), snapshot(slot, "ETH")])
+        report = coverage(rows, [], {"evidence_cutoff_ms": cutoff})
+        self.assertEqual("INVALID", report["status"])
+        self.assertEqual(1_000, report["leading_missing_slots"])
+        self.assertEqual(required, report["required_first_slot_ms"])
+        self.assertLess(report["slot_coverage"], 0.95)
+
     def test_duplicate_coin_slot_is_invalid(self):
-        rows = [snapshot(0), snapshot(0), snapshot(56 * DAY_MS)]
-        report = coverage(rows, [], {"evidence_cutoff_ms": -1}, coins=("BTC",))
+        cutoff = -1
+        first = first_slot_after_cutoff(cutoff)
+        rows = [snapshot(first), snapshot(first), snapshot(first + 56 * DAY_MS)]
+        report = coverage(rows, [], {"evidence_cutoff_ms": cutoff}, coins=("BTC",))
         self.assertEqual("INVALID", report["status"])
         self.assertEqual(1, report["duplicate_rows"])
 
