@@ -47,6 +47,48 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _lstat(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _validate_destination_path(destination: Path, name: str) -> None:
+    """Reject redirects and special files before any evidence path is mutated."""
+    destination_stat = _lstat(destination)
+    if destination_stat is None or not stat.S_ISDIR(destination_stat.st_mode):
+        raise RuntimeError("invalid_restore_destination")
+    if stat.S_ISLNK(destination_stat.st_mode):
+        raise RuntimeError("symlink_restore_destination")
+
+    relative = PurePosixPath(name)
+    current = destination
+    for part in relative.parts[:-1]:
+        current = current / part
+        current_stat = _lstat(current)
+        if current_stat is None:
+            continue
+        if stat.S_ISLNK(current_stat.st_mode):
+            raise RuntimeError(f"symlink_destination_parent:{name}")
+        if not stat.S_ISDIR(current_stat.st_mode):
+            raise RuntimeError(f"non_directory_destination_parent:{name}")
+
+    target = destination / name
+    target_stat = _lstat(target)
+    if target_stat is None:
+        return
+    if stat.S_ISLNK(target_stat.st_mode):
+        raise RuntimeError(f"symlink_destination_target:{name}")
+    if not stat.S_ISREG(target_stat.st_mode):
+        raise RuntimeError(f"non_regular_destination_target:{name}")
+
+
+def _validate_destination_entries(destination: Path, names: list[str]) -> None:
+    for name in names:
+        _validate_destination_path(destination, name)
+
+
 def _write_journal(backup_root: Path, journal: dict) -> None:
     path = backup_root / JOURNAL_NAME
     temporary = backup_root / f".{JOURNAL_NAME}.tmp"
@@ -78,6 +120,7 @@ def _load_journal(backup_root: Path) -> dict:
 
 
 def _rollback_transaction(destination: Path, backup_root: Path, journal: dict) -> None:
+    _validate_destination_entries(destination, [entry["name"] for entry in journal["entries"]])
     errors: list[str] = []
     for entry in reversed(journal["entries"]):
         name = entry["name"]
@@ -200,6 +243,7 @@ def _stage_members(
 
 
 def _commit_staged_members(stage_root: Path, destination: Path, names: list[str]) -> None:
+    _validate_destination_entries(destination, names)
     backup_root = Path(tempfile.mkdtemp(prefix=BACKUP_PREFIX, dir=destination))
     journal = {
         "schema_version": 1,
@@ -246,6 +290,7 @@ def extract_bundle(zip_path: Path, destination: Path, required: set[str]) -> dic
         shutil.rmtree(stage_root, ignore_errors=True)
     report["zip_sha256"] = hashlib.sha256(raw).hexdigest()
     report["extraction"] = "crash_recoverable_transactional_bundle_replace"
+    report["destination_path_policy"] = "no_symlink_or_special_file_components"
     report["recovered_interrupted_transactions"] = recovered
     return report
 
