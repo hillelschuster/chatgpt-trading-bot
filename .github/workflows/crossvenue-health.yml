@@ -28,7 +28,7 @@ jobs:
           test_crossvenue_artifact.py test_crossvenue_actions_health.py
           test_crossvenue_scheduler_health.py test_crossvenue_actions_binding.py
           test_crossvenue_actions_gate.py test_crossvenue_health_workflow.py
-          test_crossvenue_bundle.py
+          test_crossvenue_bundle.py test_crossvenue_bundle_journal.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
@@ -39,7 +39,7 @@ jobs:
           crossvenue_actions_binding.py test_crossvenue_actions_binding.py
           crossvenue_actions_gate.py test_crossvenue_actions_gate.py
           test_crossvenue_health_workflow.py crossvenue_bundle.py
-          test_crossvenue_bundle.py
+          test_crossvenue_bundle.py test_crossvenue_bundle_journal.py
       - name: Download latest approved successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
