@@ -20,6 +20,7 @@ class ActionsHealthTest(unittest.TestCase):
                            {"status": "downloaded", "workflow_run_id": 2}, NOW)
         self.assertEqual("HEALTHY", report["status"])
         self.assertTrue(report["restoration"]["matches_latest_success"])
+        self.assertTrue(report["cadence"]["healthy"])
 
     def test_skips_unapproved_runs(self):
         rows = [run(9, 1, branch="feature"), run(8, 2, event="pull_request"), run(7, 4)]
@@ -42,6 +43,18 @@ class ActionsHealthTest(unittest.TestCase):
         rows = [run(2, 5), run(1, 10)]
         report = summarize(rows, {"status": "downloaded", "workflow_run_id": 1}, NOW)
         self.assertIn("restoration_not_latest_success", report["blockers"])
+
+    def test_silent_schedule_gap_fails_closed(self):
+        rows = [run(4, 5), run(3, 10), run(2, 35), run(1, 40)]
+        report = summarize(rows, {"status": "downloaded", "workflow_run_id": 4}, NOW)
+        self.assertIn("collector_schedule_gap", report["blockers"])
+        self.assertEqual(25, report["cadence"]["max_gap_minutes"])
+
+    def test_dense_recent_runs_pass_cadence_gate(self):
+        rows = [run(i, minutes) for i, minutes in enumerate(range(5, 61, 5), 1)]
+        report = summarize(rows, {"status": "downloaded", "workflow_run_id": 1}, NOW)
+        self.assertNotIn("collector_schedule_gap", report["blockers"])
+        self.assertEqual(5, report["cadence"]["max_gap_minutes"])
 
 
 if __name__ == "__main__":
