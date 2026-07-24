@@ -27,7 +27,7 @@ jobs:
           test_crossvenue_snapshot_health.py test_crossvenue_snapshot_binding.py
           test_crossvenue_artifact.py test_crossvenue_actions_health.py
           test_crossvenue_scheduler_health.py test_crossvenue_actions_binding.py
-          test_crossvenue_actions_gate.py
+          test_crossvenue_actions_gate.py test_crossvenue_health_workflow.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
@@ -37,6 +37,7 @@ jobs:
           crossvenue_scheduler_health.py test_crossvenue_scheduler_health.py
           crossvenue_actions_binding.py test_crossvenue_actions_binding.py
           crossvenue_actions_gate.py test_crossvenue_actions_gate.py
+          test_crossvenue_health_workflow.py
       - name: Download latest approved successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -97,7 +98,9 @@ jobs:
           --out reports/crossvenue_actions_binding.json
       - name: Summarize and bind authoritative evidence health
         run: |
-          python crossvenue_health.py --out reports/crossvenue_health.json
+          # The base summary may be INVALID. Continue so the final gate always
+          # binds that verdict to exact operational evidence before upload.
+          python crossvenue_health.py --out reports/crossvenue_health.json || true
           python crossvenue_actions_gate.py \
             --health-report reports/crossvenue_health.json \
             --binding reports/crossvenue_actions_binding.json \
