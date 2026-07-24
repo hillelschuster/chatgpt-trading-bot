@@ -7,6 +7,8 @@ import hashlib
 import json
 from pathlib import Path
 
+EXPECTED_REDIRECT_POLICY = "https_cross_origin_credentials_stripped"
+
 
 def sha256_file(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
@@ -23,8 +25,10 @@ def verify(archive: Path, restoration: dict) -> dict:
     blockers = []
     if restoration.get("status") != "downloaded":
         blockers.append("restoration_not_downloaded")
-    if restoration.get("schema_version") != 2:
+    if restoration.get("schema_version") != 3:
         blockers.append("unsupported_restoration_schema")
+    if restoration.get("redirect_policy") != EXPECTED_REDIRECT_POLICY:
+        blockers.append("unsafe_or_missing_redirect_policy")
     if restoration.get("archive_sha256") != actual_sha256:
         blockers.append("archive_sha256_mismatch")
     if restoration.get("archive_bytes") != actual_bytes:
@@ -34,11 +38,12 @@ def verify(archive: Path, restoration: dict) -> dict:
             blockers.append(f"missing_restoration_{field}")
     return {
         "status": "VALID" if not blockers else "INVALID",
-        "schema_version": 1,
+        "schema_version": 2,
         "archive_sha256": actual_sha256,
         "archive_bytes": actual_bytes,
         "artifact_id": restoration.get("artifact_id"),
         "workflow_run_id": restoration.get("workflow_run_id"),
+        "redirect_policy": restoration.get("redirect_policy"),
         "blockers": blockers,
     }
 
@@ -53,7 +58,7 @@ def main() -> int:
         restoration = json.loads(args.restoration.read_text(encoding="utf-8"))
         report = verify(args.archive, restoration)
     except (OSError, json.JSONDecodeError) as exc:
-        report = {"status": "INVALID", "schema_version": 1, "blockers": [str(exc)]}
+        report = {"status": "INVALID", "schema_version": 2, "blockers": [str(exc)]}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2, sort_keys=True))
