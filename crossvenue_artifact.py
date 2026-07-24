@@ -8,6 +8,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 ALLOWED_EVENTS = {"schedule", "workflow_dispatch"}
@@ -75,8 +76,27 @@ def request_json(url, token):
         return json.load(response)
 
 
+def inspect_zip(path):
+    """Read every member and return deterministic structural/CRC evidence."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            if not members:
+                raise ValueError("artifact_zip_has_no_members")
+            corrupt = archive.testzip()
+            if corrupt is not None:
+                raise ValueError(f"artifact_zip_crc_failure:{corrupt}")
+            return {
+                "zip_member_count": len(members),
+                "zip_uncompressed_bytes": sum(member.file_size for member in members),
+                "zip_crc_verified": True,
+            }
+    except zipfile.BadZipFile as exc:
+        raise ValueError("artifact_not_valid_zip") from exc
+
+
 def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES, opener=None):
-    """Atomically persist a bounded artifact and return its exact byte identity."""
+    """Atomically persist a bounded, CRC-valid artifact and return its byte identity."""
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
@@ -108,6 +128,7 @@ def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES, opener=None):
             os.fsync(output.fileno())
         if size == 0:
             raise ValueError("empty_artifact_download")
+        zip_identity = inspect_zip(temporary)
         os.replace(temporary, destination)
         directory_descriptor = os.open(destination.parent, os.O_RDONLY)
         try:
@@ -117,8 +138,12 @@ def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES, opener=None):
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
-    return {"archive_sha256": digest.hexdigest(), "archive_bytes": size,
-            "redirect_policy": "https_cross_origin_credentials_stripped"}
+    return {
+        "archive_sha256": digest.hexdigest(),
+        "archive_bytes": size,
+        "redirect_policy": "https_cross_origin_credentials_stripped",
+        **zip_identity,
+    }
 
 
 def find(repository, artifact_name, token, max_pages=10, branch=None, workflow_path=None):
@@ -180,7 +205,7 @@ def main():
     identity = download(artifact["archive_download_url"], args.token, args.out)
     report = {
         "status": "downloaded",
-        "schema_version": 3,
+        "schema_version": 4,
         "artifact_id": artifact["id"],
         "workflow_run_id": (artifact.get("workflow_run") or {}).get("id"),
         "created_at": artifact.get("created_at"),
