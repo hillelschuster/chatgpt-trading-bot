@@ -26,7 +26,7 @@ jobs:
           python -m unittest -v test_crossvenue_health.py
           test_crossvenue_snapshot_health.py test_crossvenue_snapshot_binding.py
           test_crossvenue_artifact.py test_crossvenue_actions_health.py
-          test_crossvenue_scheduler_health.py
+          test_crossvenue_scheduler_health.py test_crossvenue_actions_binding.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
@@ -34,6 +34,7 @@ jobs:
           crossvenue_artifact.py test_crossvenue_artifact.py
           crossvenue_actions_health.py test_crossvenue_actions_health.py
           crossvenue_scheduler_health.py test_crossvenue_scheduler_health.py
+          crossvenue_actions_binding.py test_crossvenue_actions_binding.py
       - name: Download latest approved successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -55,26 +56,43 @@ jobs:
           --snapshots data/crossvenue_snapshots.jsonl
           --snapshot-report reports/crossvenue_snapshot_health.json
           --out reports/crossvenue_snapshot_binding.json
-      - name: Audit collector workflow execution health
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          python crossvenue_actions_health.py --repository "$GITHUB_REPOSITORY"
-          --workflow crossvenue-probe.yml
-          --restoration reports/crossvenue_restoration.json
-          --out reports/crossvenue_actions_health.json
-      - name: Fetch collector runs for schedule-only cadence audit
+      - name: Fetch collector runs once for reproducible operational audit
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh api "repos/$GITHUB_REPOSITORY/actions/workflows/crossvenue-probe.yml/runs?branch=main&per_page=100"
           > reports/crossvenue_workflow_runs.json
+      - name: Audit collector workflow execution health from saved runs
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from crossvenue_actions_health import summarize
+
+          runs_payload = json.loads(Path("reports/crossvenue_workflow_runs.json").read_text())
+          runs = runs_payload.get("workflow_runs") or []
+          restoration = json.loads(Path("reports/crossvenue_restoration.json").read_text())
+          report = summarize(runs, restoration)
+          Path("reports/crossvenue_actions_health.json").write_text(
+              json.dumps(report, indent=2, allow_nan=False) + "\n"
+          )
+          print(json.dumps(report, indent=2, allow_nan=False))
+          if report["status"] == "INVALID":
+              raise SystemExit(1)
+          PY
       - name: Replace mixed-event cadence with schedule-only audit
         run: >-
           python crossvenue_scheduler_health.py
           --runs reports/crossvenue_workflow_runs.json
           --actions-report reports/crossvenue_actions_health.json
           --out reports/crossvenue_actions_health.json
+      - name: Bind Actions audit to exact saved inputs
+        run: >-
+          python crossvenue_actions_binding.py
+          --runs reports/crossvenue_workflow_runs.json
+          --restoration reports/crossvenue_restoration.json
+          --actions-report reports/crossvenue_actions_health.json
+          --out reports/crossvenue_actions_binding.json
       - name: Summarize evidence health
         run: python crossvenue_health.py --out reports/crossvenue_health.json
       - uses: actions/upload-artifact@v4
@@ -87,6 +105,7 @@ jobs:
             reports/crossvenue_snapshot_health.json
             reports/crossvenue_snapshot_binding.json
             reports/crossvenue_actions_health.json
+            reports/crossvenue_actions_binding.json
             reports/crossvenue_health.json
           retention-days: 30
           if-no-files-found: error
