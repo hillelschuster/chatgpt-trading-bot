@@ -1,3 +1,4 @@
+import hashlib
 import stat
 import tempfile
 import unittest
@@ -15,18 +16,40 @@ class BundleTests(unittest.TestCase):
                 archive.writestr(name, payload)
         return path
 
-    def test_valid_bundle_is_extracted_and_reported(self):
+    def test_valid_bundle_is_atomically_extracted_and_content_bound(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            snapshots = b"{}\n"
+            chain = b'{"valid":true}\n'
             bundle = self.make_zip(root, [
-                ("data/crossvenue_snapshots.jsonl", b"{}\n"),
-                ("reports/crossvenue_chain.json", b'{"valid":true}\n'),
+                ("data/crossvenue_snapshots.jsonl", snapshots),
+                ("reports/crossvenue_chain.json", chain),
             ])
             out = root / "out"
             report = extract_bundle(bundle, out, {"data/crossvenue_snapshots.jsonl"})
             self.assertEqual(report["status"], "VALID")
+            self.assertEqual(report["schema_version"], 2)
             self.assertEqual(report["member_count"], 2)
-            self.assertEqual((out / "data/crossvenue_snapshots.jsonl").read_bytes(), b"{}\n")
+            self.assertEqual(report["extraction"], "atomic_member_replace")
+            self.assertEqual(
+                report["members"]["data/crossvenue_snapshots.jsonl"]["sha256"],
+                hashlib.sha256(snapshots).hexdigest(),
+            )
+            self.assertEqual((out / "data/crossvenue_snapshots.jsonl").read_bytes(), snapshots)
+            self.assertEqual((out / "data/crossvenue_snapshots.jsonl").stat().st_mode & 0o777, 0o600)
+            self.assertFalse(list((out / "data").glob(".crossvenue_snapshots.jsonl.*")))
+
+    def test_existing_target_is_replaced_only_after_complete_member_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = self.make_zip(root, [("data/value", b"new")])
+            out = root / "out"
+            target = out / "data/value"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"old")
+            report = extract_bundle(bundle, out, {"data/value"})
+            self.assertEqual(report["status"], "VALID")
+            self.assertEqual(target.read_bytes(), b"new")
 
     def test_path_traversal_is_rejected_before_extraction(self):
         with tempfile.TemporaryDirectory() as tmp:
