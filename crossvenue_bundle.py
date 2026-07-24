@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import stat
+import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -26,58 +28,93 @@ def _safe_name(raw: str) -> str:
     return str(path)
 
 
-def inspect_bundle(zip_path: Path, required: set[str]) -> dict:
+def _read_bundle(zip_path: Path) -> bytes:
     raw = zip_path.read_bytes()
+    if len(raw) > MAX_TOTAL_BYTES:
+        raise ValueError("compressed_bundle_too_large")
+    return raw
+
+
+def _inspect_archive(archive: zipfile.ZipFile, required: set[str]) -> tuple[dict, list[zipfile.ZipInfo]]:
     members: dict[str, dict] = {}
+    files: list[zipfile.ZipInfo] = []
     total = 0
-    with zipfile.ZipFile(zip_path) as archive:
-        for info in archive.infolist():
-            name = _safe_name(info.filename)
-            if name in members:
-                raise ValueError(f"duplicate_member:{name}")
-            mode = info.external_attr >> 16
-            if stat.S_ISLNK(mode):
-                raise ValueError(f"symlink_member:{name}")
-            if info.is_dir():
-                continue
-            total += info.file_size
-            if total > MAX_TOTAL_BYTES:
-                raise ValueError("bundle_too_large")
-            ratio = info.file_size / max(info.compress_size, 1)
-            if ratio > MAX_COMPRESSION_RATIO:
-                raise ValueError(f"compression_ratio_exceeded:{name}")
-            members[name] = {
-                "size": info.file_size,
-                "compressed_size": info.compress_size,
-                "crc32": f"{info.CRC:08x}",
-            }
+    for info in archive.infolist():
+        name = _safe_name(info.filename)
+        if name in members:
+            raise ValueError(f"duplicate_member:{name}")
+        mode = info.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"symlink_member:{name}")
+        if info.is_dir():
+            continue
+        total += info.file_size
+        if total > MAX_TOTAL_BYTES:
+            raise ValueError("bundle_too_large")
+        ratio = info.file_size / max(info.compress_size, 1)
+        if ratio > MAX_COMPRESSION_RATIO:
+            raise ValueError(f"compression_ratio_exceeded:{name}")
+        members[name] = {
+            "size": info.file_size,
+            "compressed_size": info.compress_size,
+            "crc32": f"{info.CRC:08x}",
+        }
+        files.append(info)
     missing = sorted(required - set(members))
     if missing:
         raise ValueError("missing_required:" + ",".join(missing))
     return {
         "status": "VALID",
-        "schema_version": 1,
-        "zip_sha256": hashlib.sha256(raw).hexdigest(),
+        "schema_version": 2,
         "member_count": len(members),
         "total_uncompressed_bytes": total,
         "members": dict(sorted(members.items())),
-    }
+    }, files
+
+
+def inspect_bundle(zip_path: Path, required: set[str]) -> dict:
+    raw = _read_bundle(zip_path)
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        report, _ = _inspect_archive(archive, required)
+    report["zip_sha256"] = hashlib.sha256(raw).hexdigest()
+    return report
 
 
 def extract_bundle(zip_path: Path, destination: Path, required: set[str]) -> dict:
-    report = inspect_bundle(zip_path, required)
+    raw = _read_bundle(zip_path)
     destination.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as archive:
-        for info in archive.infolist():
-            if info.is_dir():
-                continue
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        report, files = _inspect_archive(archive, required)
+        for info in files:
             name = _safe_name(info.filename)
             target = destination / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(info) as source, target.open("wb") as output:
-                while chunk := source.read(1024 * 1024):
-                    output.write(chunk)
-            os.chmod(target, 0o600)
+            digest = hashlib.sha256()
+            written = 0
+            fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+            try:
+                with os.fdopen(fd, "wb") as output, archive.open(info) as source:
+                    while chunk := source.read(1024 * 1024):
+                        written += len(chunk)
+                        if written > info.file_size:
+                            raise ValueError(f"member_size_exceeded:{name}")
+                        digest.update(chunk)
+                        output.write(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
+                if written != info.file_size:
+                    raise ValueError(f"member_size_mismatch:{name}")
+                os.chmod(temp_name, 0o600)
+                os.replace(temp_name, target)
+            except Exception:
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass
+                raise
+            report["members"][name]["sha256"] = digest.hexdigest()
+    report["zip_sha256"] = hashlib.sha256(raw).hexdigest()
+    report["extraction"] = "atomic_member_replace"
     return report
 
 
@@ -92,7 +129,7 @@ def main() -> int:
     try:
         report = extract_bundle(args.zip_path, args.destination, required)
     except (OSError, zipfile.BadZipFile, ValueError) as exc:
-        report = {"status": "INVALID", "schema_version": 1, "error": str(exc)}
+        report = {"status": "INVALID", "schema_version": 2, "error": str(exc)}
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
