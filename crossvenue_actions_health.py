@@ -13,6 +13,9 @@ TERMINAL_FAILURES = {"failure", "cancelled", "timed_out", "action_required", "st
 MAX_SUCCESS_AGE_MINUTES = 30
 MAX_ACTIVE_AGE_MINUTES = 15
 MAX_CONSECUTIVE_FAILURES = 2
+RUN_CADENCE_MINUTES = 5
+RUN_GAP_WINDOW_MINUTES = 60
+MAX_RUN_GAP_MINUTES = 15
 
 
 def parse_time_ms(value):
@@ -36,6 +39,26 @@ def approved(run):
     return run.get("head_branch") == "main" and run.get("event") in ALLOWED_EVENTS
 
 
+def cadence_health(relevant, now_ms):
+    window_start = now_ms - RUN_GAP_WINDOW_MINUTES * 60_000
+    times = sorted({parse_time_ms(r.get("created_at")) for r in relevant
+                    if parse_time_ms(r.get("created_at")) >= window_start})
+    gaps = []
+    for left, right in zip(times, times[1:]):
+        gaps.append((right - left) / 60_000)
+    if times:
+        gaps.append((now_ms - times[-1]) / 60_000)
+    max_gap = max(gaps) if gaps else None
+    return {
+        "expected_cadence_minutes": RUN_CADENCE_MINUTES,
+        "window_minutes": RUN_GAP_WINDOW_MINUTES,
+        "approved_run_count": len(times),
+        "max_gap_minutes": max_gap,
+        "gap_limit_minutes": MAX_RUN_GAP_MINUTES,
+        "healthy": max_gap is None or max_gap <= MAX_RUN_GAP_MINUTES,
+    }
+
+
 def summarize(runs, restoration=None, now_ms=None):
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     relevant = sorted(
@@ -49,6 +72,7 @@ def summarize(runs, restoration=None, now_ms=None):
     failures = [r for r in completed if r.get("conclusion") in TERMINAL_FAILURES]
     latest = relevant[0] if relevant else {}
     latest_success = successes[0] if successes else {}
+    cadence = cadence_health(relevant, now_ms)
 
     consecutive_failures = 0
     for run in completed:
@@ -79,6 +103,8 @@ def summarize(runs, restoration=None, now_ms=None):
         blockers.append("repeated_collector_failures")
     if oldest_active_age_minutes is not None and oldest_active_age_minutes > MAX_ACTIVE_AGE_MINUTES:
         blockers.append("collector_run_stuck")
+    if not cadence["healthy"]:
+        blockers.append("collector_schedule_gap")
     if restoration:
         if restoration.get("status") != "downloaded":
             blockers.append("restoration_not_downloaded")
@@ -99,6 +125,7 @@ def summarize(runs, restoration=None, now_ms=None):
         },
         "active": {"count": len(active), "oldest_age_minutes": oldest_active_age_minutes},
         "failures": {"completed_failure_count": len(failures), "consecutive": consecutive_failures},
+        "cadence": cadence,
         "restoration": {
             "workflow_run_id": restored_run_id or None,
             "matches_latest_success": bool(restoration) and restored_run_id == latest_success_id,
