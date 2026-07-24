@@ -25,15 +25,17 @@ jobs:
       - run: >-
           python -m unittest -v test_crossvenue_health.py
           test_crossvenue_snapshot_health.py test_crossvenue_snapshot_binding.py
-          test_crossvenue_artifact.py test_crossvenue_actions_health.py
-          test_crossvenue_scheduler_health.py test_crossvenue_actions_binding.py
-          test_crossvenue_actions_gate.py test_crossvenue_health_workflow.py
-          test_crossvenue_bundle.py test_crossvenue_bundle_journal.py
+          test_crossvenue_artifact.py test_crossvenue_artifact_download.py
+          test_crossvenue_actions_health.py test_crossvenue_scheduler_health.py
+          test_crossvenue_actions_binding.py test_crossvenue_actions_gate.py
+          test_crossvenue_health_workflow.py test_crossvenue_bundle.py
+          test_crossvenue_bundle_journal.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
           crossvenue_snapshot_binding.py test_crossvenue_snapshot_binding.py
-          crossvenue_artifact.py test_crossvenue_artifact.py
+          crossvenue_artifact.py crossvenue_artifact_binding.py
+          test_crossvenue_artifact.py test_crossvenue_artifact_download.py
           crossvenue_actions_health.py test_crossvenue_actions_health.py
           crossvenue_scheduler_health.py test_crossvenue_scheduler_health.py
           crossvenue_actions_binding.py test_crossvenue_actions_binding.py
@@ -48,7 +50,12 @@ jobs:
           python crossvenue_artifact.py --repository "$GITHUB_REPOSITORY" \
             --artifact-name crossvenue-series --branch main \
             --workflow-path .github/workflows/crossvenue-probe.yml \
-            --out /tmp/series.zip --required | tee reports/crossvenue_restoration.json
+            --out /tmp/series.zip --required \
+            --report reports/crossvenue_restoration.json
+          python crossvenue_artifact_binding.py \
+            --archive /tmp/series.zip \
+            --restoration reports/crossvenue_restoration.json \
+            --out reports/crossvenue_artifact_binding.json
           python crossvenue_bundle.py /tmp/series.zip --destination . \
             --report reports/crossvenue_bundle.json \
             --required-member data/crossvenue_experiment_freeze.json \
@@ -120,6 +127,7 @@ jobs:
           name: crossvenue-health-${{ github.run_id }}
           path: |
             reports/crossvenue_restoration.json
+            reports/crossvenue_artifact_binding.json
             reports/crossvenue_bundle.json
             reports/crossvenue_workflow_runs.json
             reports/crossvenue_snapshot_health.json
