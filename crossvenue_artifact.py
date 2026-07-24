@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Restore only a completed successful prospective artifact from the approved workflow."""
 import argparse
+import hashlib
 import json
 import os
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 ALLOWED_EVENTS = {"schedule", "workflow_dispatch"}
+MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
 
 
 def run_is_approved(run, branch=None, workflow_path=None):
@@ -48,15 +51,48 @@ def request_json(url, token):
         return json.load(response)
 
 
-def download(url, token, path):
+def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES):
+    """Atomically persist a bounded artifact and return its exact byte identity."""
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "crossvenue-artifact-restorer",
     })
-    with urllib.request.urlopen(request, timeout=60) as response:
-        Path(path).write_bytes(response.read())
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                declared = response.headers.get("Content-Length")
+                if declared is not None and int(declared) > max_bytes:
+                    raise ValueError("artifact_content_length_too_large")
+                while chunk := response.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise ValueError("artifact_download_too_large")
+                    digest.update(chunk)
+                    output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        if size == 0:
+            raise ValueError("empty_artifact_download")
+        os.replace(temporary, destination)
+        directory_descriptor = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return {"archive_sha256": digest.hexdigest(), "archive_bytes": size}
 
 
 def find(repository, artifact_name, token, max_pages=10, branch=None, workflow_path=None):
@@ -84,6 +120,14 @@ def find(repository, artifact_name, token, max_pages=10, branch=None, workflow_p
     return None
 
 
+def _write_report(path, report):
+    if not path:
+        return
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", required=True)
@@ -91,6 +135,7 @@ def main():
     parser.add_argument("--branch", default="main")
     parser.add_argument("--workflow-path", default=".github/workflows/crossvenue-probe.yml")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--report")
     parser.add_argument("--token", default=os.environ.get("GH_TOKEN"))
     parser.add_argument("--required", action="store_true")
     args = parser.parse_args()
@@ -99,21 +144,27 @@ def main():
     artifact = find(args.repository, args.artifact_name, args.token,
                     branch=args.branch, workflow_path=args.workflow_path)
     if not artifact:
+        report = {"status": "not_found", "artifact_name": args.artifact_name,
+                  "branch": args.branch, "workflow_path": args.workflow_path}
+        _write_report(args.report, report)
+        print(json.dumps(report))
         if args.required:
             raise SystemExit("no approved completed successful prospective artifact found")
-        print(json.dumps({"status": "not_found", "artifact_name": args.artifact_name,
-                          "branch": args.branch, "workflow_path": args.workflow_path}))
         return
-    download(artifact["archive_download_url"], args.token, args.out)
-    print(json.dumps({
+    identity = download(artifact["archive_download_url"], args.token, args.out)
+    report = {
         "status": "downloaded",
+        "schema_version": 2,
         "artifact_id": artifact["id"],
         "workflow_run_id": (artifact.get("workflow_run") or {}).get("id"),
         "created_at": artifact.get("created_at"),
         "branch": args.branch,
         "workflow_path": args.workflow_path,
         "out": args.out,
-    }))
+        **identity,
+    }
+    _write_report(args.report, report)
+    print(json.dumps(report, sort_keys=True))
 
 
 if __name__ == "__main__":
