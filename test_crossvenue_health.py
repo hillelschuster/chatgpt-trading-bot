@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -24,7 +25,8 @@ class HealthTest(unittest.TestCase):
         write_json(data / "crossvenue_experiment_freeze.json", {
             "schema": "crossvenue-experiment-freeze-v2", "frozen_at_ms": cutoff,
             "evidence_cutoff_ms": cutoff, "files": {"x": "abc"}})
-        write_jsonl(data / "crossvenue_snapshots.jsonl", [
+        snapshots_path = data / "crossvenue_snapshots.jsonl"
+        write_jsonl(snapshots_path, [
             {"captured_at_ms": cutoff + 300_000, "cadence_slot_ms": cutoff + 300_000, "coin": "BTC"},
             {"captured_at_ms": cutoff + 300_000, "cadence_slot_ms": cutoff + 300_000, "coin": "ETH"},
         ])
@@ -46,6 +48,10 @@ class HealthTest(unittest.TestCase):
         write_json(reports / "crossvenue_snapshot_health.json", {
             "status": "HEALTHY", "healthy": True, "recent_rows": 2,
             "invalid_rows": 0, "duplicate_rows": 0, "blockers": []})
+        write_json(reports / "crossvenue_snapshot_binding.json", {
+            "status": "HEALTHY", "valid": True,
+            "snapshot_sha256": hashlib.sha256(snapshots_path.read_bytes()).hexdigest(),
+            "blockers": []})
         write_json(reports / "crossvenue_chain.json", {"valid": True, "errors": []})
         write_json(reports / "crossvenue_coverage.json", {
             "status": "COLLECTING", "collection_span_days": 1,
@@ -66,7 +72,10 @@ class HealthTest(unittest.TestCase):
             self.assertTrue(result["integrity"]["required_data_present"])
             self.assertTrue(result["integrity"]["required_reports_present"])
             self.assertTrue(result["integrity"]["snapshot_health_valid"])
+            self.assertTrue(result["integrity"]["snapshot_binding_valid"])
+            self.assertTrue(result["integrity"]["snapshot_binding_digest_matches"])
             self.assertEqual("HEALTHY", result["collection"]["snapshot_integrity"]["status"])
+            self.assertEqual("HEALTHY", result["collection"]["snapshot_integrity"]["binding_status"])
             self.assertEqual("HEALTHY", result["operations"]["status"])
             self.assertTrue(result["operations"]["restoration"]["matches_latest_success"])
             self.assertEqual("WARMING_UP", result["collection"]["recent_cadence"]["status"])
@@ -133,6 +142,36 @@ class HealthTest(unittest.TestCase):
             result = summarize(data, reports, now_ms=cutoff + 600_000)
             self.assertEqual("INVALID", result["status"])
             self.assertIn("snapshot_payload_unhealthy", result["integrity"]["blockers"])
+
+    def test_missing_snapshot_binding_fails_combined_health_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            (reports / "crossvenue_snapshot_binding.json").unlink()
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("required_reports_missing", result["integrity"]["blockers"])
+            self.assertIn("snapshot_binding_missing", result["integrity"]["blockers"])
+
+    def test_snapshot_binding_digest_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            binding = json.loads((reports / "crossvenue_snapshot_binding.json").read_text())
+            binding["snapshot_sha256"] = "0" * 64
+            write_json(reports / "crossvenue_snapshot_binding.json", binding)
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("snapshot_binding_invalid", result["integrity"]["blockers"])
+            self.assertFalse(result["integrity"]["snapshot_binding_digest_matches"])
+
+    def test_snapshot_binding_false_valid_fails_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data, reports, cutoff = self.fixture(root)
+            binding = json.loads((reports / "crossvenue_snapshot_binding.json").read_text())
+            binding["valid"] = False
+            write_json(reports / "crossvenue_snapshot_binding.json", binding)
+            result = summarize(data, reports, now_ms=cutoff + 600_000)
+            self.assertEqual("INVALID", result["status"])
+            self.assertIn("snapshot_binding_invalid", result["integrity"]["blockers"])
 
     def test_missing_actions_health_fails_closed(self):
         with tempfile.TemporaryDirectory() as root:
