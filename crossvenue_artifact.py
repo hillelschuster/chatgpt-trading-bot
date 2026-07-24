@@ -6,11 +6,34 @@ import json
 import os
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 ALLOWED_EVENTS = {"schedule", "workflow_dispatch"}
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
+SENSITIVE_REDIRECT_HEADERS = {"authorization", "x-github-api-version"}
+
+
+class SafeArtifactRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow HTTPS redirects without forwarding GitHub credentials cross-origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urlsplit(newurl)
+        if target.scheme.lower() != "https" or not target.hostname:
+            raise urllib.error.HTTPError(
+                newurl, code, "unsafe_artifact_redirect", headers, fp
+            )
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        source = urllib.parse.urlsplit(req.full_url)
+        if (source.scheme.lower(), source.hostname, source.port) != (
+            target.scheme.lower(), target.hostname, target.port
+        ):
+            for header in SENSITIVE_REDIRECT_HEADERS:
+                redirected.remove_header(header)
+        return redirected
 
 
 def run_is_approved(run, branch=None, workflow_path=None):
@@ -51,7 +74,7 @@ def request_json(url, token):
         return json.load(response)
 
 
-def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES):
+def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES, opener=None):
     """Atomically persist a bounded artifact and return its exact byte identity."""
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
@@ -67,9 +90,10 @@ def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES):
     temporary = Path(temporary_name)
     digest = hashlib.sha256()
     size = 0
+    safe_opener = opener or urllib.request.build_opener(SafeArtifactRedirectHandler())
     try:
         with os.fdopen(descriptor, "wb") as output:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with safe_opener.open(request, timeout=60) as response:
                 declared = response.headers.get("Content-Length")
                 if declared is not None and int(declared) > max_bytes:
                     raise ValueError("artifact_content_length_too_large")
@@ -92,7 +116,8 @@ def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES):
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
-    return {"archive_sha256": digest.hexdigest(), "archive_bytes": size}
+    return {"archive_sha256": digest.hexdigest(), "archive_bytes": size,
+            "redirect_policy": "https_cross_origin_credentials_stripped"}
 
 
 def find(repository, artifact_name, token, max_pages=10, branch=None, workflow_path=None):
@@ -154,7 +179,7 @@ def main():
     identity = download(artifact["archive_download_url"], args.token, args.out)
     report = {
         "status": "downloaded",
-        "schema_version": 2,
+        "schema_version": 3,
         "artifact_id": artifact["id"],
         "workflow_run_id": (artifact.get("workflow_run") or {}).get("id"),
         "created_at": artifact.get("created_at"),
