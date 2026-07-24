@@ -2,6 +2,7 @@
 """Audit live GitHub Actions health for the frozen prospective collector."""
 import argparse
 import json
+import math
 import os
 import time
 import urllib.request
@@ -41,21 +42,25 @@ def approved(run):
 
 def cadence_health(relevant, now_ms):
     window_start = now_ms - RUN_GAP_WINDOW_MINUTES * 60_000
-    times = sorted({parse_time_ms(r.get("created_at")) for r in relevant
-                    if parse_time_ms(r.get("created_at")) >= window_start})
-    gaps = []
-    for left, right in zip(times, times[1:]):
-        gaps.append((right - left) / 60_000)
-    if times:
-        gaps.append((now_ms - times[-1]) / 60_000)
-    max_gap = max(gaps) if gaps else None
+    times = sorted({
+        ts for r in relevant
+        if window_start <= (ts := parse_time_ms(r.get("created_at"))) <= now_ms
+    })
+    boundaries = [window_start, *times, now_ms]
+    gaps = [(right - left) / 60_000 for left, right in zip(boundaries, boundaries[1:])]
+    max_gap = max(gaps) if gaps else RUN_GAP_WINDOW_MINUTES
+    excessive = [gap for gap in gaps if gap > MAX_RUN_GAP_MINUTES]
+    missed = sum(max(0, math.ceil(gap / RUN_CADENCE_MINUTES) - 1) for gap in gaps)
     return {
         "expected_cadence_minutes": RUN_CADENCE_MINUTES,
         "window_minutes": RUN_GAP_WINDOW_MINUTES,
         "approved_run_count": len(times),
+        "expected_run_count": RUN_GAP_WINDOW_MINUTES // RUN_CADENCE_MINUTES,
+        "estimated_missed_runs": missed,
         "max_gap_minutes": max_gap,
         "gap_limit_minutes": MAX_RUN_GAP_MINUTES,
-        "healthy": max_gap is None or max_gap <= MAX_RUN_GAP_MINUTES,
+        "excessive_gap_count": len(excessive),
+        "healthy": bool(times) and not excessive,
     }
 
 
