@@ -54,13 +54,19 @@ def _lstat(path: Path) -> os.stat_result | None:
         return None
 
 
-def _validate_destination_path(destination: Path, name: str) -> None:
-    """Reject redirects and special files before any evidence path is mutated."""
+def _validate_restore_root(destination: Path) -> None:
     destination_stat = _lstat(destination)
-    if destination_stat is None or not stat.S_ISDIR(destination_stat.st_mode):
-        raise RuntimeError("invalid_restore_destination")
+    if destination_stat is None:
+        raise RuntimeError("missing_restore_destination")
     if stat.S_ISLNK(destination_stat.st_mode):
         raise RuntimeError("symlink_restore_destination")
+    if not stat.S_ISDIR(destination_stat.st_mode):
+        raise RuntimeError("invalid_restore_destination")
+
+
+def _validate_destination_path(destination: Path, name: str) -> None:
+    """Reject redirects and special files before any evidence path is mutated."""
+    _validate_restore_root(destination)
 
     relative = PurePosixPath(name)
     current = destination
@@ -149,6 +155,7 @@ def recover_interrupted_restores(destination: Path) -> int:
     """Recover incomplete transactions before any new artifact is inspected."""
     if not destination.exists():
         return 0
+    _validate_restore_root(destination)
     recovered = 0
     for stage_root in sorted(destination.glob(f"{STAGE_PREFIX}*")):
         if stage_root.is_dir():
@@ -278,6 +285,7 @@ def _commit_staged_members(stage_root: Path, destination: Path, names: list[str]
 
 def extract_bundle(zip_path: Path, destination: Path, required: set[str]) -> dict:
     destination.mkdir(parents=True, exist_ok=True)
+    _validate_restore_root(destination)
     recovered = recover_interrupted_restores(destination)
     raw = _read_bundle(zip_path)
     stage_root = Path(tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=destination))
