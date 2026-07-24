@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import tempfile
 import zipfile
@@ -65,7 +66,7 @@ def _inspect_archive(archive: zipfile.ZipFile, required: set[str]) -> tuple[dict
         raise ValueError("missing_required:" + ",".join(missing))
     return {
         "status": "VALID",
-        "schema_version": 2,
+        "schema_version": 3,
         "member_count": len(members),
         "total_uncompressed_bytes": total,
         "members": dict(sorted(members.items())),
@@ -80,41 +81,84 @@ def inspect_bundle(zip_path: Path, required: set[str]) -> dict:
     return report
 
 
+def _stage_members(
+    archive: zipfile.ZipFile,
+    files: list[zipfile.ZipInfo],
+    stage_root: Path,
+    report: dict,
+) -> list[str]:
+    names: list[str] = []
+    for info in files:
+        name = _safe_name(info.filename)
+        staged = stage_root / name
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        written = 0
+        with staged.open("wb") as output, archive.open(info) as source:
+            while chunk := source.read(1024 * 1024):
+                written += len(chunk)
+                if written > info.file_size:
+                    raise ValueError(f"member_size_exceeded:{name}")
+                digest.update(chunk)
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        if written != info.file_size:
+            raise ValueError(f"member_size_mismatch:{name}")
+        os.chmod(staged, 0o600)
+        report["members"][name]["sha256"] = digest.hexdigest()
+        names.append(name)
+    return names
+
+
+def _commit_staged_members(stage_root: Path, destination: Path, names: list[str]) -> None:
+    backup_root = Path(tempfile.mkdtemp(prefix=".crossvenue-restore-backup.", dir=destination))
+    replaced: list[tuple[Path, Path | None]] = []
+    try:
+        for name in names:
+            target = destination / name
+            staged = stage_root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            backup: Path | None = None
+            if target.exists():
+                backup = backup_root / name
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(target, backup)
+            try:
+                os.replace(staged, target)
+            except Exception:
+                if backup is not None:
+                    os.replace(backup, target)
+                raise
+            replaced.append((target, backup))
+    except Exception:
+        for target, backup in reversed(replaced):
+            try:
+                if target.exists():
+                    target.unlink()
+                if backup is not None and backup.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(backup, target)
+            except OSError:
+                pass
+        raise
+    finally:
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+
 def extract_bundle(zip_path: Path, destination: Path, required: set[str]) -> dict:
     raw = _read_bundle(zip_path)
     destination.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-        report, files = _inspect_archive(archive, required)
-        for info in files:
-            name = _safe_name(info.filename)
-            target = destination / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            digest = hashlib.sha256()
-            written = 0
-            fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-            try:
-                with os.fdopen(fd, "wb") as output, archive.open(info) as source:
-                    while chunk := source.read(1024 * 1024):
-                        written += len(chunk)
-                        if written > info.file_size:
-                            raise ValueError(f"member_size_exceeded:{name}")
-                        digest.update(chunk)
-                        output.write(chunk)
-                    output.flush()
-                    os.fsync(output.fileno())
-                if written != info.file_size:
-                    raise ValueError(f"member_size_mismatch:{name}")
-                os.chmod(temp_name, 0o600)
-                os.replace(temp_name, target)
-            except Exception:
-                try:
-                    os.unlink(temp_name)
-                except FileNotFoundError:
-                    pass
-                raise
-            report["members"][name]["sha256"] = digest.hexdigest()
+    stage_root = Path(tempfile.mkdtemp(prefix=".crossvenue-restore-stage.", dir=destination))
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            report, files = _inspect_archive(archive, required)
+            names = _stage_members(archive, files, stage_root, report)
+        _commit_staged_members(stage_root, destination, names)
+    finally:
+        shutil.rmtree(stage_root, ignore_errors=True)
     report["zip_sha256"] = hashlib.sha256(raw).hexdigest()
-    report["extraction"] = "atomic_member_replace"
+    report["extraction"] = "transactional_bundle_replace"
     return report
 
 
@@ -129,7 +173,7 @@ def main() -> int:
     try:
         report = extract_bundle(args.zip_path, args.destination, required)
     except (OSError, zipfile.BadZipFile, ValueError) as exc:
-        report = {"status": "INVALID", "schema_version": 2, "error": str(exc)}
+        report = {"status": "INVALID", "schema_version": 3, "error": str(exc)}
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
