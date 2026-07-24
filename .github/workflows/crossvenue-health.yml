@@ -25,10 +25,12 @@ jobs:
       - run: >-
           python -m unittest -v test_crossvenue_health.py
           test_crossvenue_artifact.py test_crossvenue_actions_health.py
+          test_crossvenue_scheduler_health.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_artifact.py test_crossvenue_artifact.py
           crossvenue_actions_health.py test_crossvenue_actions_health.py
+          crossvenue_scheduler_health.py test_crossvenue_scheduler_health.py
       - name: Download latest approved successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,6 +49,18 @@ jobs:
           --workflow crossvenue-probe.yml
           --restoration reports/crossvenue_restoration.json
           --out reports/crossvenue_actions_health.json
+      - name: Fetch collector runs for schedule-only cadence audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/crossvenue-probe.yml/runs?branch=main&per_page=100"
+          > reports/crossvenue_workflow_runs.json
+      - name: Replace mixed-event cadence with schedule-only audit
+        run: >-
+          python crossvenue_scheduler_health.py
+          --runs reports/crossvenue_workflow_runs.json
+          --actions-report reports/crossvenue_actions_health.json
+          --out reports/crossvenue_actions_health.json
       - name: Summarize evidence health
         run: python crossvenue_health.py --out reports/crossvenue_health.json
       - uses: actions/upload-artifact@v4
@@ -55,6 +69,7 @@ jobs:
           name: crossvenue-health-${{ github.run_id }}
           path: |
             reports/crossvenue_restoration.json
+            reports/crossvenue_workflow_runs.json
             reports/crossvenue_actions_health.json
             reports/crossvenue_health.json
           retention-days: 30
