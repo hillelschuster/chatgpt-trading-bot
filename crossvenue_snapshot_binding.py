@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Verify that snapshot-health output was computed from the exact restored snapshot series."""
+"""Verify snapshot-health output against exact restored bytes and fixed audit semantics."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
-from crossvenue_snapshot_health import audit, read_jsonl
+from crossvenue_snapshot_health import (
+    FUTURE_TOLERANCE_MS,
+    RECENT_WINDOW_MS,
+    audit,
+    read_jsonl,
+)
+
+
+def file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def verify(snapshots_path, report_path):
@@ -16,28 +26,26 @@ def verify(snapshots_path, report_path):
             "valid": False,
             "blockers": ["snapshot_health_generated_at_missing"],
         }
-    window_ms = int(float(report.get("window_minutes", 0)) * 60_000)
-    if window_ms <= 0:
-        return {
-            "status": "INVALID",
-            "valid": False,
-            "blockers": ["snapshot_health_window_invalid"],
-        }
+
     expected = audit(
         read_jsonl(snapshots_path),
         now_ms=int(generated_at_ms),
-        window_ms=window_ms,
-        future_tolerance_ms=int(report.get("future_tolerance_ms", 60_000)),
+        window_ms=RECENT_WINDOW_MS,
+        future_tolerance_ms=FUTURE_TOLERANCE_MS,
     )
     mismatches = sorted(
         key for key in set(expected) | set(report)
         if expected.get(key) != report.get(key)
     )
+    digest = file_sha256(snapshots_path)
     valid = not mismatches
     return {
         "status": "HEALTHY" if valid else "INVALID",
         "valid": valid,
         "generated_at_ms": int(generated_at_ms),
+        "audit_window_ms": RECENT_WINDOW_MS,
+        "future_tolerance_ms": FUTURE_TOLERANCE_MS,
+        "snapshot_sha256": digest,
         "mismatched_fields": mismatches,
         "blockers": [] if valid else ["snapshot_health_evidence_mismatch"],
     }
