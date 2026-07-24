@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -5,7 +6,7 @@ from pathlib import Path
 
 from crossvenue_snapshot import DEFAULT_CADENCE_MS, SCHEMA_VERSION
 from crossvenue_snapshot_binding import verify
-from crossvenue_snapshot_health import audit
+from crossvenue_snapshot_health import FUTURE_TOLERANCE_MS, RECENT_WINDOW_MS, audit
 
 
 def snapshot(slot, coin="BTC"):
@@ -51,6 +52,10 @@ class SnapshotBindingTest(unittest.TestCase):
             result = verify(snapshots, report)
             self.assertTrue(result["valid"])
             self.assertEqual([], result["mismatched_fields"])
+            self.assertEqual(RECENT_WINDOW_MS, result["audit_window_ms"])
+            self.assertEqual(FUTURE_TOLERANCE_MS, result["future_tolerance_ms"])
+            self.assertEqual(hashlib.sha256(snapshots.read_bytes()).hexdigest(),
+                             result["snapshot_sha256"])
 
     def test_rejects_report_after_snapshot_series_changes(self):
         with tempfile.TemporaryDirectory() as root:
@@ -71,6 +76,29 @@ class SnapshotBindingTest(unittest.TestCase):
             result = verify(snapshots, report)
             self.assertFalse(result["valid"])
             self.assertIn("invalid_rows", result["mismatched_fields"])
+
+    def test_rejects_report_controlled_window(self):
+        with tempfile.TemporaryDirectory() as root:
+            snapshots, report, now = self.fixture(root)
+            rows = [snapshot(now - 10 * RECENT_WINDOW_MS, coin) for coin in ("BTC", "ETH")]
+            write_jsonl(snapshots, rows)
+            forged = audit(rows, now_ms=now, window_ms=20 * RECENT_WINDOW_MS)
+            report.write_text(json.dumps(forged))
+            result = verify(snapshots, report)
+            self.assertFalse(result["valid"])
+            self.assertIn("window_minutes", result["mismatched_fields"])
+
+    def test_rejects_report_controlled_future_tolerance(self):
+        with tempfile.TemporaryDirectory() as root:
+            snapshots, report, now = self.fixture(root)
+            future_slot = now + 2 * FUTURE_TOLERANCE_MS
+            rows = [snapshot(future_slot, coin) for coin in ("BTC", "ETH")]
+            write_jsonl(snapshots, rows)
+            forged = audit(rows, now_ms=now, future_tolerance_ms=10 * FUTURE_TOLERANCE_MS)
+            report.write_text(json.dumps(forged))
+            result = verify(snapshots, report)
+            self.assertFalse(result["valid"])
+            self.assertIn("future_tolerance_ms", result["mismatched_fields"])
 
     def test_rejects_report_without_generation_time(self):
         with tempfile.TemporaryDirectory() as root:
