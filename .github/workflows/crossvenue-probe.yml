@@ -175,8 +175,6 @@ jobs:
             data/crossvenue_pnl_events.jsonl
             data/crossvenue_validation_base_ledger.jsonl
             data/crossvenue_validation_stress_ledger.jsonl
-            reports/crossvenue_restoration.json
-            reports/crossvenue_artifact_binding.json
             reports/crossvenue_restore_bundle.json
             reports/crossvenue_freeze.json
             reports/crossvenue_continuity.json
