@@ -7,7 +7,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from crossvenue_artifact import SafeArtifactRedirectHandler, download
+from crossvenue_artifact import SafeArtifactRedirectHandler, download, inspect_zip
 from crossvenue_artifact_binding import verify
 
 
@@ -58,8 +58,31 @@ class ArtifactDownloadBindingTest(unittest.TestCase):
             self.assertEqual(2, identity["zip_member_count"])
             self.assertEqual(8, identity["zip_uncompressed_bytes"])
             self.assertIs(identity["zip_crc_verified"], True)
+            self.assertEqual("bounded_unencrypted_members_before_crc_v1", identity["zip_safety_policy"])
             self.assertEqual("https_cross_origin_credentials_stripped", identity["redirect_policy"])
             self.assertEqual("Bearer token", opener.request.get_header("Authorization"))
+            self.assertEqual([], list(target.parent.glob(f".{target.name}.*.tmp")))
+
+    def test_zip_limits_are_checked_before_crc_decompression(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "series.zip"
+            archive.write_bytes(zip_payload({"data/a": b"a" * 4096, "data/b": b"b"}))
+            with self.assertRaisesRegex(ValueError, "artifact_zip_uncompressed_too_large"):
+                inspect_zip(archive, max_uncompressed_bytes=1024, max_compression_ratio=10_000)
+            with self.assertRaisesRegex(ValueError, "artifact_zip_too_many_members"):
+                inspect_zip(archive, max_members=1, max_compression_ratio=10_000)
+            with self.assertRaisesRegex(ValueError, "artifact_zip_extreme_compression"):
+                inspect_zip(archive, max_compression_ratio=2)
+
+    def test_expansion_hazard_preserves_existing_destination(self):
+        payload = zip_payload({"data/a": b"0" * (1024 * 1024)})
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "series.zip"
+            target.write_bytes(b"old")
+            opener = FakeOpener(FakeResponse(payload, len(payload)))
+            with self.assertRaisesRegex(ValueError, "artifact_zip_extreme_compression"):
+                download("https://api.github.com/artifact", "token", target, opener=opener)
+            self.assertEqual(b"old", target.read_bytes())
             self.assertEqual([], list(target.parent.glob(f".{target.name}.*.tmp")))
 
     def test_cross_origin_redirect_strips_credentials(self):
@@ -129,7 +152,7 @@ class ArtifactDownloadBindingTest(unittest.TestCase):
             payload = zip_payload()
             archive.write_bytes(payload)
             restoration = {
-                "status": "downloaded", "schema_version": 4,
+                "status": "downloaded", "schema_version": 5,
                 "archive_sha256": hashlib.sha256(payload).hexdigest(),
                 "archive_bytes": len(payload), "artifact_id": 7, "workflow_run_id": 8,
                 "created_at": "2026-07-24T20:00:00Z", "branch": "main",
@@ -137,6 +160,7 @@ class ArtifactDownloadBindingTest(unittest.TestCase):
                 "redirect_policy": "https_cross_origin_credentials_stripped",
                 "zip_member_count": 1, "zip_uncompressed_bytes": 3,
                 "zip_crc_verified": True,
+                "zip_safety_policy": "bounded_unencrypted_members_before_crc_v1",
             }
             self.assertEqual("VALID", verify(archive, restoration)["status"])
             restoration["zip_member_count"] = 2
@@ -156,7 +180,7 @@ class ArtifactDownloadBindingTest(unittest.TestCase):
             payload = zip_payload()
             archive.write_bytes(payload)
             restoration = {
-                "status": "downloaded", "schema_version": 4,
+                "status": "downloaded", "schema_version": 5,
                 "archive_sha256": hashlib.sha256(payload).hexdigest(),
                 "archive_bytes": len(payload),
                 "zip_member_count": 1, "zip_uncompressed_bytes": 3,
@@ -165,6 +189,7 @@ class ArtifactDownloadBindingTest(unittest.TestCase):
             report = verify(archive, restoration)
             self.assertEqual("INVALID", report["status"])
             self.assertIn("unsafe_or_missing_redirect_policy", report["blockers"])
+            self.assertIn("unsafe_or_missing_zip_safety_policy", report["blockers"])
             self.assertIn("missing_restoration_artifact_id", report["blockers"])
             self.assertIn("missing_restoration_workflow_run_id", report["blockers"])
 
