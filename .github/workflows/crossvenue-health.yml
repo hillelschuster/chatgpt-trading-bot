@@ -24,11 +24,13 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m unittest -v test_crossvenue_health.py
-          test_crossvenue_snapshot_health.py test_crossvenue_artifact.py
-          test_crossvenue_actions_health.py test_crossvenue_scheduler_health.py
+          test_crossvenue_snapshot_health.py test_crossvenue_snapshot_binding.py
+          test_crossvenue_artifact.py test_crossvenue_actions_health.py
+          test_crossvenue_scheduler_health.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
+          crossvenue_snapshot_binding.py test_crossvenue_snapshot_binding.py
           crossvenue_artifact.py test_crossvenue_artifact.py
           crossvenue_actions_health.py test_crossvenue_actions_health.py
           crossvenue_scheduler_health.py test_crossvenue_scheduler_health.py
@@ -47,6 +49,12 @@ jobs:
           python crossvenue_snapshot_health.py
           --snapshots data/crossvenue_snapshots.jsonl
           --out reports/crossvenue_snapshot_health.json
+      - name: Bind snapshot audit to exact restored evidence
+        run: >-
+          python crossvenue_snapshot_binding.py
+          --snapshots data/crossvenue_snapshots.jsonl
+          --snapshot-report reports/crossvenue_snapshot_health.json
+          --out reports/crossvenue_snapshot_binding.json
       - name: Audit collector workflow execution health
         env:
           GH_TOKEN: ${{ github.token }}
@@ -77,6 +85,7 @@ jobs:
             reports/crossvenue_restoration.json
             reports/crossvenue_workflow_runs.json
             reports/crossvenue_snapshot_health.json
+            reports/crossvenue_snapshot_binding.json
             reports/crossvenue_actions_health.json
             reports/crossvenue_health.json
           retention-days: 30
