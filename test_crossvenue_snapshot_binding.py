@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from crossvenue_snapshot import DEFAULT_CADENCE_MS, SCHEMA_VERSION
-from crossvenue_snapshot_binding import verify
+from crossvenue_snapshot_binding import MAX_REPORT_AGE_MS, verify
 from crossvenue_snapshot_health import FUTURE_TOLERANCE_MS, RECENT_WINDOW_MS, audit
 
 
@@ -48,10 +48,12 @@ class SnapshotBindingTest(unittest.TestCase):
 
     def test_accepts_report_recomputed_from_exact_series(self):
         with tempfile.TemporaryDirectory() as root:
-            snapshots, report, _ = self.fixture(root)
-            result = verify(snapshots, report)
+            snapshots, report, now = self.fixture(root)
+            result = verify(snapshots, report, now_ms=now + 1_000)
             self.assertTrue(result["valid"])
             self.assertEqual([], result["mismatched_fields"])
+            self.assertEqual(1_000, result["report_age_ms"])
+            self.assertEqual(MAX_REPORT_AGE_MS, result["maximum_report_age_ms"])
             self.assertEqual(RECENT_WINDOW_MS, result["audit_window_ms"])
             self.assertEqual(FUTURE_TOLERANCE_MS, result["future_tolerance_ms"])
             self.assertEqual(hashlib.sha256(snapshots.read_bytes()).hexdigest(),
@@ -62,18 +64,18 @@ class SnapshotBindingTest(unittest.TestCase):
             snapshots, report, now = self.fixture(root)
             rows = [snapshot(now - DEFAULT_CADENCE_MS, "BTC")]
             write_jsonl(snapshots, rows)
-            result = verify(snapshots, report)
+            result = verify(snapshots, report, now_ms=now)
             self.assertFalse(result["valid"])
             self.assertIn("recent_rows", result["mismatched_fields"])
             self.assertIn("snapshot_health_evidence_mismatch", result["blockers"])
 
     def test_rejects_tampered_healthy_report(self):
         with tempfile.TemporaryDirectory() as root:
-            snapshots, report, _ = self.fixture(root)
+            snapshots, report, now = self.fixture(root)
             value = json.loads(report.read_text())
             value["invalid_rows"] = 99
             report.write_text(json.dumps(value))
-            result = verify(snapshots, report)
+            result = verify(snapshots, report, now_ms=now)
             self.assertFalse(result["valid"])
             self.assertIn("invalid_rows", result["mismatched_fields"])
 
@@ -84,7 +86,7 @@ class SnapshotBindingTest(unittest.TestCase):
             write_jsonl(snapshots, rows)
             forged = audit(rows, now_ms=now, window_ms=20 * RECENT_WINDOW_MS)
             report.write_text(json.dumps(forged))
-            result = verify(snapshots, report)
+            result = verify(snapshots, report, now_ms=now)
             self.assertFalse(result["valid"])
             self.assertIn("window_minutes", result["mismatched_fields"])
 
@@ -96,18 +98,36 @@ class SnapshotBindingTest(unittest.TestCase):
             write_jsonl(snapshots, rows)
             forged = audit(rows, now_ms=now, future_tolerance_ms=10 * FUTURE_TOLERANCE_MS)
             report.write_text(json.dumps(forged))
-            result = verify(snapshots, report)
+            result = verify(snapshots, report, now_ms=now)
             self.assertFalse(result["valid"])
             self.assertIn("future_tolerance_ms", result["mismatched_fields"])
 
     def test_rejects_report_without_generation_time(self):
         with tempfile.TemporaryDirectory() as root:
-            snapshots, report, _ = self.fixture(root)
+            snapshots, report, now = self.fixture(root)
             value = json.loads(report.read_text())
             value.pop("generated_at_ms")
             report.write_text(json.dumps(value))
-            result = verify(snapshots, report)
+            result = verify(snapshots, report, now_ms=now)
             self.assertEqual(["snapshot_health_generated_at_missing"], result["blockers"])
+
+    def test_rejects_stale_but_otherwise_exact_report(self):
+        with tempfile.TemporaryDirectory() as root:
+            snapshots, report, now = self.fixture(root)
+            result = verify(snapshots, report, now_ms=now + MAX_REPORT_AGE_MS + 1)
+            self.assertFalse(result["valid"])
+            self.assertEqual([], result["mismatched_fields"])
+            self.assertIn("snapshot_health_report_stale", result["blockers"])
+
+    def test_rejects_future_dated_report(self):
+        with tempfile.TemporaryDirectory() as root:
+            snapshots, report, now = self.fixture(root)
+            rows = [snapshot(now - DEFAULT_CADENCE_MS, coin) for coin in ("BTC", "ETH")]
+            future_generated = now + FUTURE_TOLERANCE_MS + 1
+            report.write_text(json.dumps(audit(rows, now_ms=future_generated)))
+            result = verify(snapshots, report, now_ms=now)
+            self.assertFalse(result["valid"])
+            self.assertIn("snapshot_health_generated_at_future", result["blockers"])
 
 
 if __name__ == "__main__":
