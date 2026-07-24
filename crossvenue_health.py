@@ -10,6 +10,10 @@ MIN_PERIODS = 200
 MIN_DAYS = 56
 STALE_MULTIPLIER = 3
 CADENCE_MS = 300_000
+RECENT_WINDOW_MS = 3_600_000
+RECENT_GRACE_MS = 120_000
+RECENT_MIN_COVERAGE = 0.90
+COINS = ("BTC", "ETH")
 
 REQUIRED_DATA = (
     "crossvenue_experiment_freeze.json",
@@ -64,6 +68,67 @@ def missing_files(root, names):
     return [name for name in names if not (Path(root) / name).is_file()]
 
 
+def recent_snapshot_cadence(rows, cutoff_ms, now_ms):
+    """Audit the last hour of actual BTC/ETH snapshot slots after startup warm-up."""
+    if not cutoff_ms or now_ms - cutoff_ms < RECENT_WINDOW_MS:
+        return {
+            "status": "WARMING_UP",
+            "healthy": True,
+            "window_minutes": RECENT_WINDOW_MS / 60_000,
+            "minimum_coverage": RECENT_MIN_COVERAGE,
+        }
+
+    window_start = max(cutoff_ms, now_ms - RECENT_WINDOW_MS)
+    first_slot = (window_start // CADENCE_MS + 1) * CADENCE_MS
+    last_slot = ((now_ms - RECENT_GRACE_MS) // CADENCE_MS) * CADENCE_MS
+    slots = list(range(first_slot, last_slot + 1, CADENCE_MS)) if last_slot >= first_slot else []
+    expected = {(slot, coin) for slot in slots for coin in COINS}
+
+    observed = []
+    for row in rows:
+        slot = row.get("cadence_slot_ms")
+        coin = row.get("coin")
+        if slot is None or coin not in COINS:
+            continue
+        key = (int(slot), coin)
+        if key in expected:
+            observed.append(key)
+
+    unique = set(observed)
+    complete_slots = sum(all((slot, coin) in unique for coin in COINS) for slot in slots)
+    expected_rows = len(expected)
+    row_coverage = len(unique) / expected_rows if expected_rows else 1.0
+    slot_coverage = complete_slots / len(slots) if slots else 1.0
+    missing = sorted(expected - unique)
+    duplicate_rows = len(observed) - len(unique)
+    healthy = (
+        bool(slots)
+        and row_coverage >= RECENT_MIN_COVERAGE
+        and slot_coverage >= RECENT_MIN_COVERAGE
+        and duplicate_rows == 0
+    )
+    return {
+        "status": "HEALTHY" if healthy else "INVALID",
+        "healthy": healthy,
+        "window_minutes": RECENT_WINDOW_MS / 60_000,
+        "grace_minutes": RECENT_GRACE_MS / 60_000,
+        "minimum_coverage": RECENT_MIN_COVERAGE,
+        "first_expected_slot_ms": first_slot if slots else None,
+        "last_expected_slot_ms": last_slot if slots else None,
+        "expected_slots": len(slots),
+        "complete_slots": complete_slots,
+        "expected_rows": expected_rows,
+        "observed_rows": len(unique),
+        "missing_rows": len(missing),
+        "duplicate_rows": duplicate_rows,
+        "row_coverage": row_coverage,
+        "complete_slot_coverage": slot_coverage,
+        "missing_examples": [
+            {"cadence_slot_ms": slot, "coin": coin} for slot, coin in missing[:10]
+        ],
+    }
+
+
 def summarize(data_dir, reports_dir, now_ms=None):
     data_dir, reports_dir = Path(data_dir), Path(reports_dir)
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
@@ -83,6 +148,7 @@ def summarize(data_dir, reports_dir, now_ms=None):
 
     cutoff = int(manifest.get("evidence_cutoff_ms") or 0)
     post_snapshots = [r for r in snapshots if row_time(r) > cutoff]
+    recent_cadence = recent_snapshot_cadence(snapshots, cutoff, now_ms)
     complete_settlements = sum(r.get("settlement_status") == "complete" for r in settlements)
     complete_pnl = sum(r.get("pnl_status") == "complete" for r in pnl)
     complete_periods = unique_periods(pnl)
@@ -108,6 +174,8 @@ def summarize(data_dir, reports_dir, now_ms=None):
         blockers.append("artifact_chain_invalid")
     if stale:
         blockers.append("collection_stale")
+    if not recent_cadence["healthy"]:
+        blockers.append("recent_snapshot_cadence_unhealthy")
     if coverage.get("duplicate_rows", 0):
         blockers.append("snapshot_duplicates")
     if validation.get("status") == "INVALID":
@@ -146,7 +214,8 @@ def summarize(data_dir, reports_dir, now_ms=None):
         "collection": {"span_days": span_days, "last_snapshot_ms": last_snapshot_ms,
                        "stale_minutes": stale_minutes, "slot_coverage": coverage.get("slot_coverage"),
                        "complete_slot_coverage": coverage.get("complete_slot_coverage"),
-                       "event_accounting": coverage.get("event_accounting")},
+                       "event_accounting": coverage.get("event_accounting"),
+                       "recent_cadence": recent_cadence},
         "operations": {
             "status": actions_health.get("status"),
             "latest_run": actions_health.get("latest_run"),
