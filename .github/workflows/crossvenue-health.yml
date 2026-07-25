@@ -119,7 +119,15 @@ jobs:
           python crossvenue_transport_gate.py \
             --health-report reports/crossvenue_health.json \
             --artifact-binding reports/crossvenue_artifact_binding.json \
-            --bundle-report reports/crossvenue_bundle.json || true
+            --bundle-report reports/crossvenue_bundle.json \
+            --archive /tmp/series.zip \
+            --restoration reports/crossvenue_restoration.json \
+            --destination . \
+            --required-member data/crossvenue_experiment_freeze.json \
+            --required-member data/crossvenue_snapshots.jsonl \
+            --required-member reports/crossvenue_chain.json \
+            --required-member reports/crossvenue_validation.json \
+            --required-member reports/crossvenue_promotion.json || true
           python crossvenue_actions_gate.py \
             --health-report reports/crossvenue_health.json \
             --binding reports/crossvenue_actions_binding.json \
