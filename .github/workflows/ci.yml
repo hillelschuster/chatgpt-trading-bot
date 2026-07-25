@@ -28,17 +28,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run active research tests
+      - name: Test market evidence pipeline
         run: >-
           python -m unittest -v
           test_crossvenue_snapshot.py
           test_crossvenue_events.py
           test_crossvenue_settlements.py
+      - name: Test accounting and validation
+        run: >-
+          python -m unittest -v
           test_crossvenue_chain.py
           test_crossvenue_pnl.py
           test_crossvenue_freeze.py
           test_crossvenue_validate.py
           test_crossvenue_coverage.py
+      - name: Test persistence and workflow
+        run: >-
+          python -m unittest -v
           test_crossvenue_scheduled_artifact.py
           test_crossvenue_artifact_download.py
           test_crossvenue_bundle.py
