@@ -25,7 +25,8 @@ jobs:
       - run: >-
           python -m unittest -v test_crossvenue_health.py
           test_crossvenue_snapshot_health.py test_crossvenue_snapshot_binding.py
-          test_crossvenue_artifact.py test_crossvenue_artifact_download.py
+          test_crossvenue_artifact.py test_crossvenue_scheduled_artifact.py
+          test_crossvenue_artifact_download.py
           test_crossvenue_actions_health.py test_crossvenue_scheduler_health.py
           test_crossvenue_actions_binding.py test_crossvenue_actions_gate.py
           test_crossvenue_health_workflow.py test_crossvenue_bundle.py
@@ -34,8 +35,10 @@ jobs:
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
           crossvenue_snapshot_binding.py test_crossvenue_snapshot_binding.py
-          crossvenue_artifact.py crossvenue_artifact_binding.py
-          test_crossvenue_artifact.py test_crossvenue_artifact_download.py
+          crossvenue_artifact.py crossvenue_scheduled_artifact.py
+          crossvenue_artifact_binding.py
+          test_crossvenue_artifact.py test_crossvenue_scheduled_artifact.py
+          test_crossvenue_artifact_download.py
           crossvenue_actions_health.py test_crossvenue_actions_health.py
           crossvenue_scheduler_health.py test_crossvenue_scheduler_health.py
           crossvenue_actions_binding.py test_crossvenue_actions_binding.py
@@ -43,12 +46,12 @@ jobs:
           test_crossvenue_health_workflow.py crossvenue_bundle.py
           test_crossvenue_bundle.py test_crossvenue_bundle_journal.py
           crossvenue_transport_gate.py test_crossvenue_transport_gate.py
-      - name: Download latest approved successful prospective artifact
+      - name: Download latest scheduled successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p reports
-          python crossvenue_artifact.py --repository "$GITHUB_REPOSITORY" \
+          python crossvenue_scheduled_artifact.py --repository "$GITHUB_REPOSITORY" \
             --artifact-name crossvenue-series --branch main \
             --workflow-path .github/workflows/crossvenue-probe.yml \
             --out /tmp/series.zip --required \
