@@ -29,7 +29,7 @@ jobs:
           test_crossvenue_actions_health.py test_crossvenue_scheduler_health.py
           test_crossvenue_actions_binding.py test_crossvenue_actions_gate.py
           test_crossvenue_health_workflow.py test_crossvenue_bundle.py
-          test_crossvenue_bundle_journal.py
+          test_crossvenue_bundle_journal.py test_crossvenue_transport_gate.py
       - run: >-
           python -m py_compile crossvenue_health.py test_crossvenue_health.py
           crossvenue_snapshot_health.py test_crossvenue_snapshot_health.py
@@ -42,6 +42,7 @@ jobs:
           crossvenue_actions_gate.py test_crossvenue_actions_gate.py
           test_crossvenue_health_workflow.py crossvenue_bundle.py
           test_crossvenue_bundle.py test_crossvenue_bundle_journal.py
+          crossvenue_transport_gate.py test_crossvenue_transport_gate.py
       - name: Download latest approved successful prospective artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -111,10 +112,14 @@ jobs:
           --out reports/crossvenue_actions_binding.json || true
       - name: Summarize and bind authoritative evidence health
         run: |
-          # Every audit producer writes its report even when invalid. Only this
-          # exact-evidence gate decides the job result, so uploaded health is
-          # always complete and authoritative rather than a partial pre-gate file.
+          # Every audit producer writes its report even when invalid. Only these
+          # exact-evidence gates decide the job result, so uploaded health is
+          # complete and authoritative rather than a partial pre-gate file.
           python crossvenue_health.py --out reports/crossvenue_health.json || true
+          python crossvenue_transport_gate.py \
+            --health-report reports/crossvenue_health.json \
+            --artifact-binding reports/crossvenue_artifact_binding.json \
+            --bundle-report reports/crossvenue_bundle.json || true
           python crossvenue_actions_gate.py \
             --health-report reports/crossvenue_health.json \
             --binding reports/crossvenue_actions_binding.json \
