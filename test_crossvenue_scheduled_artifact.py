@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from crossvenue_scheduled_artifact import (
+    artifact_belongs_to_run,
     choose_canonical_artifact,
     find_canonical,
     newest_named_artifact,
@@ -14,7 +15,8 @@ class ScheduledArtifactSelectionTest(unittest.TestCase):
     workflow = ".github/workflows/crossvenue-probe.yml"
 
     @staticmethod
-    def artifact(ident, run_id, created_at, expired=False, name="crossvenue-series"):
+    def artifact(ident, run_id, created_at="2026-07-25T06:05:00Z",
+                 expired=False, name="crossvenue-series"):
         return {
             "id": ident,
             "name": name,
@@ -25,7 +27,9 @@ class ScheduledArtifactSelectionTest(unittest.TestCase):
         }
 
     def run(self, ident=10, event="schedule", status="completed", conclusion="success",
-            branch="main", path=".github/workflows/crossvenue-probe.yml"):
+            branch="main", path=".github/workflows/crossvenue-probe.yml",
+            head_sha="a" * 40, created_at="2026-07-25T06:00:00Z",
+            updated_at="2026-07-25T06:06:00Z"):
         return {
             "id": ident,
             "event": event,
@@ -33,6 +37,9 @@ class ScheduledArtifactSelectionTest(unittest.TestCase):
             "conclusion": conclusion,
             "head_branch": branch,
             "path": path,
+            "head_sha": head_sha,
+            "created_at": created_at,
+            "updated_at": updated_at,
         }
 
     def test_manual_artifact_is_never_canonical(self):
@@ -40,52 +47,75 @@ class ScheduledArtifactSelectionTest(unittest.TestCase):
             self.run(event="workflow_dispatch"), self.branch, self.workflow
         ))
 
-    def test_falls_back_past_newer_manual_artifact(self):
-        artifacts = [
-            self.artifact(2, 20, "2026-07-25T06:10:00Z"),
-            self.artifact(1, 10, "2026-07-25T06:05:00Z"),
-        ]
-        runs = {
-            20: self.run(20, event="workflow_dispatch"),
-            10: self.run(10, event="schedule"),
-        }
-        chosen = choose_canonical_artifact(
-            artifacts, runs, self.branch, self.workflow
-        )
-        self.assertEqual(1, chosen["id"])
-
-    def test_rejects_failed_in_progress_wrong_branch_and_wrong_workflow(self):
+    def test_rejects_failed_in_progress_wrong_branch_workflow_or_missing_sha(self):
         variants = [
             self.run(conclusion="failure"),
             self.run(status="in_progress", conclusion=None),
             self.run(branch="experiment"),
             self.run(path=".github/workflows/other.yml"),
             self.run(event="pull_request"),
+            self.run(head_sha=""),
+            self.run(head_sha="abc"),
         ]
         for run in variants:
             with self.subTest(run=run):
                 self.assertFalse(run_is_canonical(run, self.branch, self.workflow))
 
-    def test_newest_named_artifact_ignores_expired_and_wrong_name(self):
-        payload = {"artifacts": [
+    def test_artifact_requires_exact_run_and_possible_timestamp(self):
+        run = self.run(10)
+        self.assertTrue(artifact_belongs_to_run(self.artifact(1, 10), run))
+        invalid = [
+            self.artifact(1, 11),
+            self.artifact(1, 10, "2026-07-25T05:59:59Z"),
+            self.artifact(1, 10, "2026-07-25T06:17:00Z"),
+            self.artifact(1, 10, "not-a-time"),
+        ]
+        for artifact in invalid:
+            with self.subTest(artifact=artifact):
+                self.assertFalse(artifact_belongs_to_run(artifact, run))
+
+    def test_falls_back_past_newer_unbound_artifact(self):
+        artifacts = [
+            self.artifact(2, 20, "2026-07-25T06:10:00Z"),
             self.artifact(1, 10, "2026-07-25T06:05:00Z"),
-            self.artifact(2, 10, "2026-07-25T06:10:00Z", expired=True),
-            self.artifact(3, 10, "2026-07-25T06:15:00Z", name="diagnostic"),
+        ]
+        runs = {
+            20: self.run(20, event="workflow_dispatch", updated_at="2026-07-25T06:11:00Z"),
+            10: self.run(10),
+        }
+        chosen = choose_canonical_artifact(
+            artifacts, runs, self.branch, self.workflow
+        )
+        self.assertEqual(1, chosen["id"])
+        self.assertEqual(10, chosen["_canonical_run"]["id"])
+
+    def test_newest_named_artifact_ignores_expired_wrong_name_and_wrong_run(self):
+        run = self.run(10)
+        payload = {"artifacts": [
+            self.artifact(1, 10),
+            self.artifact(2, 10, expired=True),
+            self.artifact(3, 10, name="diagnostic"),
+            self.artifact(4, 99),
         ]}
-        self.assertEqual(1, newest_named_artifact(payload, "crossvenue-series")["id"])
+        chosen = newest_named_artifact(payload, "crossvenue-series", run)
+        self.assertEqual(1, chosen["id"])
+        self.assertEqual(run, chosen["_canonical_run"])
 
     @patch("crossvenue_scheduled_artifact.request_json")
     def test_queries_successful_scheduled_runs_before_artifacts(self, request):
         older = self.run(10)
-        newer_without_artifact = self.run(20)
+        newer_without_artifact = self.run(
+            20, created_at="2026-07-25T06:10:00Z", updated_at="2026-07-25T06:16:00Z"
+        )
         request.side_effect = [
             {"workflow_runs": [newer_without_artifact, older]},
             {"artifacts": []},
-            {"artifacts": [self.artifact(1, 10, "2026-07-25T06:05:00Z")]},
+            {"artifacts": [self.artifact(1, 10)]},
         ]
         chosen = find_canonical("owner/repo", "crossvenue-series", "token",
                                 self.branch, self.workflow)
         self.assertEqual(1, chosen["id"])
+        self.assertEqual("a" * 40, chosen["_canonical_run"]["head_sha"])
         first_url = request.call_args_list[0].args[0]
         self.assertIn("event=schedule", first_url)
         self.assertIn("status=success", first_url)
@@ -94,13 +124,17 @@ class ScheduledArtifactSelectionTest(unittest.TestCase):
 
     @patch("crossvenue_scheduled_artifact.request_json")
     def test_paginates_successful_runs_without_repository_artifact_cap(self, request):
-        page_one = [self.run(i) for i in range(100, 200)]
+        page_one = [self.run(
+            i,
+            created_at="2026-07-25T06:00:00Z",
+            updated_at="2026-07-25T06:06:00Z",
+        ) for i in range(100, 200)]
         old = self.run(9)
         request.side_effect = [
             {"workflow_runs": page_one},
             *({"artifacts": []} for _ in page_one),
             {"workflow_runs": [old]},
-            {"artifacts": [self.artifact(9, 9, "2026-07-20T00:00:00Z")]},
+            {"artifacts": [self.artifact(9, 9, "2026-07-25T06:05:00Z")]},
         ]
         chosen = find_canonical("owner/repo", "crossvenue-series", "token",
                                 self.branch, self.workflow, max_pages=2)
