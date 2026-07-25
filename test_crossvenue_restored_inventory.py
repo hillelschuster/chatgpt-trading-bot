@@ -3,7 +3,11 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from crossvenue_restored_inventory import MANAGED_MEMBERS, verify_restored_inventory
+from crossvenue_restored_inventory import (
+    MANAGED_MEMBERS,
+    TRANSPORT_METADATA,
+    verify_restored_inventory,
+)
 
 
 class RestoredInventoryTests(unittest.TestCase):
@@ -25,6 +29,23 @@ class RestoredInventoryTests(unittest.TestCase):
         report = verify_restored_inventory(archive, root)
         self.assertEqual("VALID", report["status"])
         self.assertEqual([], report["blockers"])
+        self.assertEqual(2, report["schema_version"])
+
+    def test_current_restore_report_does_not_conflict_with_archived_predecessor(self):
+        members = {name: name for name in MANAGED_MEMBERS}
+        archived_report = "reports/crossvenue_restore_bundle.json"
+        members[archived_report] = "prior restoration metadata"
+        root, archive = self._fixture(members)
+        (root / archived_report).write_text("current restoration metadata")
+
+        report = verify_restored_inventory(archive, root)
+
+        self.assertEqual("VALID", report["status"])
+        self.assertIn(archived_report, report["excluded_transport_metadata"])
+        self.assertNotIn(archived_report, report["digest_mismatches"])
+
+    def test_all_transport_metadata_is_outside_managed_series(self):
+        self.assertTrue(TRANSPORT_METADATA.isdisjoint(MANAGED_MEMBERS))
 
     def test_stale_managed_file_from_prior_artifact_fails(self):
         omitted = "data/crossvenue_pnl_events.jsonl"
