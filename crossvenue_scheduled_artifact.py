@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import urllib.error
+import urllib.parse
 
 from crossvenue_artifact import _write_report, download, request_json
 
@@ -42,41 +43,68 @@ def choose_canonical_artifact(
     return None
 
 
+def newest_named_artifact(payload: dict, artifact_name: str) -> dict | None:
+    """Return the newest non-expired exact-name artifact from one workflow run."""
+    candidates = [
+        artifact
+        for artifact in payload.get("artifacts") or []
+        if artifact.get("name") == artifact_name and not artifact.get("expired")
+    ]
+    return max(
+        candidates,
+        key=lambda artifact: (
+            artifact.get("created_at") or "",
+            int(artifact.get("id") or 0),
+        ),
+        default=None,
+    )
+
+
 def find_canonical(
     repository: str,
     artifact_name: str,
     token: str,
     branch: str,
     workflow_path: str,
-    max_pages: int = 10,
+    max_pages: int = 300,
 ) -> dict | None:
-    """Search backward until a non-expired scheduled artifact is found."""
+    """Search successful scheduled workflow runs, then inspect only their artifacts.
+
+    Querying the repository-wide artifact stream is unsafe during a prolonged outage:
+    failed scheduled runs can emit thousands of same-name diagnostic artifacts and push
+    the last successful baseline beyond a small arbitrary page cap. The workflow-runs
+    endpoint filters to scheduled successes first, so the first usable artifact remains
+    discoverable for the full artifact-retention horizon without scanning failed runs.
+    """
     base = f"https://api.github.com/repos/{repository}"
+    workflow_id = urllib.parse.quote(workflow_path, safe="")
+    branch_query = urllib.parse.quote(branch, safe="")
     for page in range(1, max_pages + 1):
-        payload = request_json(
-            f"{base}/actions/artifacts?name={artifact_name}&per_page=100&page={page}",
+        runs_payload = request_json(
+            f"{base}/actions/workflows/{workflow_id}/runs"
+            f"?branch={branch_query}&event={CANONICAL_EVENT}&status=success"
+            f"&per_page=100&page={page}",
             token,
         )
-        artifacts = payload.get("artifacts") or []
-        ordered = sorted(
-            (artifact for artifact in artifacts if not artifact.get("expired")),
-            key=lambda artifact: (
-                artifact.get("created_at") or "",
-                int(artifact.get("id") or 0),
-            ),
-            reverse=True,
-        )
-        for artifact in ordered:
-            run_id = int((artifact.get("workflow_run") or {}).get("id") or 0)
+        runs = runs_payload.get("workflow_runs") or []
+        for run in runs:
+            if not run_is_canonical(run, branch, workflow_path):
+                continue
+            run_id = int(run.get("id") or 0)
             if not run_id:
                 continue
             try:
-                run = request_json(f"{base}/actions/runs/{run_id}", token)
+                artifacts_payload = request_json(
+                    f"{base}/actions/runs/{run_id}/artifacts"
+                    f"?name={urllib.parse.quote(artifact_name, safe='')}&per_page=100",
+                    token,
+                )
             except urllib.error.HTTPError:
                 continue
-            if run_is_canonical(run, branch, workflow_path):
+            artifact = newest_named_artifact(artifacts_payload, artifact_name)
+            if artifact is not None:
                 return artifact
-        if len(artifacts) < 100:
+        if len(runs) < 100:
             break
     return None
 
@@ -111,6 +139,7 @@ def main() -> int:
             "branch": args.branch,
             "workflow_path": args.workflow_path,
             "allowed_events": [CANONICAL_EVENT],
+            "selection": "successful_scheduled_workflow_runs_then_named_artifact",
         }
         _write_report(args.report, report)
         print(json.dumps(report, sort_keys=True))
@@ -121,13 +150,14 @@ def main() -> int:
     identity = download(artifact["archive_download_url"], args.token, args.out)
     report = {
         "status": "downloaded",
-        "schema_version": 5,
+        "schema_version": 6,
         "artifact_id": artifact["id"],
         "workflow_run_id": (artifact.get("workflow_run") or {}).get("id"),
         "created_at": artifact.get("created_at"),
         "branch": args.branch,
         "workflow_path": args.workflow_path,
         "allowed_events": [CANONICAL_EVENT],
+        "selection": "successful_scheduled_workflow_runs_then_named_artifact",
         "out": args.out,
         **identity,
     }
