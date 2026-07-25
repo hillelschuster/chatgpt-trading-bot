@@ -1,3 +1,10 @@
 __pycache__/
-*.pyc
-data/*.jsonl
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+data/
+reports/
+*.zip

@@ -4,13 +4,19 @@ on:
   push:
     branches: [main]
     paths:
-      - "*.py"
-      - "CROSS_VENUE_EXPERIMENT.md"
+      - "src/**/*.py"
+      - "tests/**/*.py"
+      - "docs/**/*.md"
+      - "README.md"
+      - "PROGRESS.md"
       - ".github/workflows/*.yml"
   pull_request:
     paths:
-      - "*.py"
-      - "CROSS_VENUE_EXPERIMENT.md"
+      - "src/**/*.py"
+      - "tests/**/*.py"
+      - "docs/**/*.md"
+      - "README.md"
+      - "PROGRESS.md"
       - ".github/workflows/*.yml"
 
 concurrency:
@@ -20,6 +26,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  PYTHONPATH: src
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -28,40 +37,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Test market evidence pipeline
-        run: >-
-          python -m unittest -v
-          test_crossvenue_snapshot.py
-          test_crossvenue_events.py
-          test_crossvenue_settlements.py
-      - name: Test accounting and validation
-        run: >-
-          python -m unittest -v
-          test_crossvenue_chain.py
-          test_crossvenue_pnl.py
-          test_crossvenue_freeze.py
-          test_crossvenue_validate.py
-          test_crossvenue_coverage.py
-      - name: Test scheduled artifact selection
-        run: python -m unittest -v test_crossvenue_scheduled_artifact.py
-      - name: Test artifact download
-        run: python -m unittest -v test_crossvenue_artifact_download.py
-      - name: Test bundle restore
-        run: python -m unittest -v test_crossvenue_bundle.py
-      - name: Test workflow provenance
-        run: python -m unittest -v test_crossvenue_collection_provenance.py
-      - name: Compile active modules
-        run: >-
-          python -m py_compile
-          crossvenue_snapshot.py
-          crossvenue_events.py
-          crossvenue_settlements.py
-          crossvenue_chain.py
-          crossvenue_pnl.py
-          crossvenue_freeze.py
-          crossvenue_validate.py
-          crossvenue_coverage.py
-          crossvenue_promote.py
-          crossvenue_artifact.py
-          crossvenue_scheduled_artifact.py
-          crossvenue_bundle.py
+      - name: Run active tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+      - name: Compile active Python
+        run: python -m py_compile src/*.py tests/*.py
