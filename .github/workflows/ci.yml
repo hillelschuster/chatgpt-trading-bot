@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - "*.py"
-      - ".github/workflows/ci.yml"
+      - "CROSS_VENUE_EXPERIMENT.md"
+      - ".github/workflows/*.yml"
   pull_request:
     paths:
       - "*.py"
-      - ".github/workflows/ci.yml"
+      - "CROSS_VENUE_EXPERIMENT.md"
+      - ".github/workflows/*.yml"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -26,5 +28,33 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m unittest -v
-      - run: python -m py_compile *.py
+      - name: Run active research tests
+        run: >-
+          python -m unittest -v
+          test_crossvenue_snapshot.py
+          test_crossvenue_events.py
+          test_crossvenue_settlements.py
+          test_crossvenue_chain.py
+          test_crossvenue_pnl.py
+          test_crossvenue_freeze.py
+          test_crossvenue_validate.py
+          test_crossvenue_coverage.py
+          test_crossvenue_scheduled_artifact.py
+          test_crossvenue_artifact_download.py
+          test_crossvenue_bundle.py
+          test_crossvenue_collection_provenance.py
+      - name: Compile active modules
+        run: >-
+          python -m py_compile
+          crossvenue_snapshot.py
+          crossvenue_events.py
+          crossvenue_settlements.py
+          crossvenue_chain.py
+          crossvenue_pnl.py
+          crossvenue_freeze.py
+          crossvenue_validate.py
+          crossvenue_coverage.py
+          crossvenue_promote.py
+          crossvenue_artifact.py
+          crossvenue_scheduled_artifact.py
+          crossvenue_bundle.py
