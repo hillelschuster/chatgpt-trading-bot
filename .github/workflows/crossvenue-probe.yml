@@ -34,6 +34,7 @@ on:
       - "test_crossvenue_bundle.py"
       - "test_crossvenue_bundle_journal.py"
       - "test_crossvenue_restored_inventory.py"
+      - "test_crossvenue_collection_provenance.py"
       - "CROSS_VENUE_EXPERIMENT.md"
       - ".github/workflows/crossvenue-probe.yml"
 
@@ -62,6 +63,7 @@ jobs:
           test_crossvenue_coverage.py test_crossvenue_artifact.py
           test_crossvenue_artifact_download.py test_crossvenue_bundle.py
           test_crossvenue_bundle_journal.py test_crossvenue_restored_inventory.py
+          test_crossvenue_collection_provenance.py
       - run: >-
           python -m py_compile crossvenue_snapshot.py crossvenue_events.py
           crossvenue_settlements.py crossvenue_chain.py crossvenue_pnl.py
@@ -76,6 +78,7 @@ jobs:
           test_crossvenue_artifact.py test_crossvenue_artifact_download.py
           test_crossvenue_bundle.py test_crossvenue_bundle_journal.py
           test_crossvenue_restored_inventory.py
+          test_crossvenue_collection_provenance.py
       - name: Restore latest approved successful prospective series
         if: github.event_name != 'pull_request'
         env:
@@ -173,7 +176,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ${{ github.event_name == 'pull_request' && format('crossvenue-probe-{0}', github.run_id) || 'crossvenue-series' }}
+          name: ${{ github.event_name == 'schedule' && 'crossvenue-series' || format('crossvenue-probe-{0}', github.run_id) }}
           path: |
             data/crossvenue_experiment_freeze.json
             data/crossvenue_snapshots.jsonl
