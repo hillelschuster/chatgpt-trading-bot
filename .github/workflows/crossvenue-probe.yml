@@ -39,7 +39,7 @@ on:
       - ".github/workflows/crossvenue-probe.yml"
 
 concurrency:
-  group: crossvenue-series
+  group: ${{ github.event_name == 'schedule' && 'crossvenue-series' || format('crossvenue-probe-{0}', github.run_id) }}
   cancel-in-progress: false
 
 permissions:
