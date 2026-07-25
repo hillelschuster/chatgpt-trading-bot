@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +12,7 @@ SCHEMA_VERSION = 1
 EXPECTED_SELECTION = "successful_scheduled_workflow_runs_then_bound_named_artifact"
 EXPECTED_BINDING = "exact_run_id_and_bounded_timestamps_v1"
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
+_SHA64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _timestamp_ms(value: object) -> int | None:
@@ -37,15 +37,8 @@ def _positive_int(value: object) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def expected_archive_url(repository: str, artifact_id: int) -> str:
-    owner_repo = repository.strip("/")
-    if owner_repo.count("/") != 1 or any(not part for part in owner_repo.split("/")):
-        raise ValueError("repository must be owner/name")
-    quoted = "/".join(urllib.parse.quote(part, safe="") for part in owner_repo.split("/"))
-    return f"https://api.github.com/repos/{quoted}/actions/artifacts/{artifact_id}/zip"
-
-
 def verify(report: dict, repository: str, branch: str, workflow_path: str) -> dict:
+    """Validate every immutable provenance field emitted by the scheduled selector."""
     blockers: list[str] = []
     checks: dict[str, bool] = {}
 
@@ -54,6 +47,7 @@ def verify(report: dict, repository: str, branch: str, workflow_path: str) -> di
     head_sha = report.get("workflow_run_head_sha")
 
     checks["downloaded_status"] = report.get("status") == "downloaded"
+    checks["schema_version_7"] = report.get("schema_version") == 7
     checks["positive_artifact_id"] = artifact_id is not None
     checks["positive_workflow_run_id"] = run_id is not None
     checks["scheduled_event"] = report.get("workflow_run_event") == "schedule"
@@ -61,7 +55,10 @@ def verify(report: dict, repository: str, branch: str, workflow_path: str) -> di
     checks["exact_workflow_path"] = report.get("workflow_path") == workflow_path
     checks["exact_selection_policy"] = report.get("selection") == EXPECTED_SELECTION
     checks["exact_binding_policy"] = report.get("artifact_run_binding") == EXPECTED_BINDING
-    checks["strict_lowercase_head_sha"] = isinstance(head_sha, str) and bool(_SHA40.fullmatch(head_sha))
+    checks["schedule_only_allowlist"] = report.get("allowed_events") == ["schedule"]
+    checks["strict_lowercase_head_sha"] = isinstance(head_sha, str) and bool(
+        _SHA40.fullmatch(head_sha)
+    )
 
     run_created_ms = _timestamp_ms(report.get("workflow_run_created_at"))
     run_updated_ms = _timestamp_ms(report.get("workflow_run_updated_at"))
@@ -77,22 +74,22 @@ def verify(report: dict, repository: str, branch: str, workflow_path: str) -> di
         and run_created_ms <= artifact_created_ms <= run_updated_ms + 10 * 60 * 1000
     )
 
-    allowed_events = report.get("allowed_events")
-    checks["schedule_only_allowlist"] = allowed_events == ["schedule"]
-
-    archive_url = report.get("archive_download_url")
-    if artifact_id is not None:
-        expected_url = expected_archive_url(repository, artifact_id)
-        checks["exact_github_archive_url"] = archive_url == expected_url
-    else:
-        expected_url = None
-        checks["exact_github_archive_url"] = False
-
     archive_sha = report.get("archive_sha256")
     checks["strict_archive_sha256"] = isinstance(archive_sha, str) and bool(
-        re.fullmatch(r"[0-9a-f]{64}", archive_sha)
+        _SHA64.fullmatch(archive_sha)
     )
-    checks["positive_archive_size"] = _positive_int(report.get("archive_size_bytes")) is not None
+    checks["positive_archive_size"] = _positive_int(report.get("archive_bytes")) is not None
+    checks["zip_crc_verified"] = report.get("zip_crc_verified") is True
+    checks["positive_zip_member_count"] = _positive_int(report.get("zip_member_count")) is not None
+    checks["positive_zip_uncompressed_bytes"] = (
+        _positive_int(report.get("zip_uncompressed_bytes")) is not None
+    )
+    checks["safe_redirect_policy"] = (
+        report.get("redirect_policy") == "https_cross_origin_credentials_stripped"
+    )
+    checks["bounded_zip_policy"] = (
+        report.get("zip_safety_policy") == "bounded_unencrypted_members_before_crc_v1"
+    )
 
     for name, passed in checks.items():
         if not passed:
@@ -106,7 +103,6 @@ def verify(report: dict, repository: str, branch: str, workflow_path: str) -> di
         "expected_workflow_path": workflow_path,
         "artifact_id": artifact_id,
         "workflow_run_id": run_id,
-        "expected_archive_url": expected_url,
         "checks": checks,
         "blockers": blockers,
     }
