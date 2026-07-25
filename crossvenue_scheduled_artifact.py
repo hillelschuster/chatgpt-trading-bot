@@ -7,10 +7,24 @@ import json
 import os
 import urllib.error
 import urllib.parse
+from datetime import datetime, timezone
 
 from crossvenue_artifact import _write_report, download, request_json
 
 CANONICAL_EVENT = "schedule"
+MAX_ARTIFACT_AFTER_RUN_MS = 10 * 60 * 1000
+
+
+def _timestamp_ms(value: object) -> int | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
 
 
 def run_is_canonical(run: dict, branch: str, workflow_path: str) -> bool:
@@ -21,7 +35,27 @@ def run_is_canonical(run: dict, branch: str, workflow_path: str) -> bool:
         and run.get("event") == CANONICAL_EVENT
         and run.get("head_branch") == branch
         and run.get("path") == workflow_path
+        and int(run.get("id") or 0) > 0
+        and isinstance(run.get("head_sha"), str)
+        and len(run.get("head_sha")) == 40
     )
+
+
+def artifact_belongs_to_run(artifact: dict, run: dict) -> bool:
+    """Bind an artifact to one exact run and reject impossible timestamps."""
+    run_id = int(run.get("id") or 0)
+    artifact_run_id = int((artifact.get("workflow_run") or {}).get("id") or 0)
+    if not run_id or artifact_run_id != run_id:
+        return False
+
+    artifact_ms = _timestamp_ms(artifact.get("created_at"))
+    run_created_ms = _timestamp_ms(run.get("created_at"))
+    run_updated_ms = _timestamp_ms(run.get("updated_at"))
+    if artifact_ms is None or run_created_ms is None or run_updated_ms is None:
+        return False
+    if run_updated_ms < run_created_ms:
+        return False
+    return run_created_ms <= artifact_ms <= run_updated_ms + MAX_ARTIFACT_AFTER_RUN_MS
 
 
 def choose_canonical_artifact(
@@ -38,26 +72,39 @@ def choose_canonical_artifact(
     )
     for artifact in ordered:
         run_id = int((artifact.get("workflow_run") or {}).get("id") or 0)
-        if run_id and run_is_canonical(runs.get(run_id) or {}, branch, workflow_path):
-            return artifact
+        run = runs.get(run_id) or {}
+        if (
+            run_is_canonical(run, branch, workflow_path)
+            and artifact_belongs_to_run(artifact, run)
+        ):
+            selected = dict(artifact)
+            selected["_canonical_run"] = run
+            return selected
     return None
 
 
-def newest_named_artifact(payload: dict, artifact_name: str) -> dict | None:
-    """Return the newest non-expired exact-name artifact from one workflow run."""
+def newest_named_artifact(payload: dict, artifact_name: str, run: dict) -> dict | None:
+    """Return the newest exact-name artifact bound to one workflow run."""
     candidates = [
         artifact
         for artifact in payload.get("artifacts") or []
-        if artifact.get("name") == artifact_name and not artifact.get("expired")
+        if artifact.get("name") == artifact_name
+        and not artifact.get("expired")
+        and artifact_belongs_to_run(artifact, run)
     ]
-    return max(
+    artifact = max(
         candidates,
-        key=lambda artifact: (
-            artifact.get("created_at") or "",
-            int(artifact.get("id") or 0),
+        key=lambda item: (
+            item.get("created_at") or "",
+            int(item.get("id") or 0),
         ),
         default=None,
     )
+    if artifact is None:
+        return None
+    selected = dict(artifact)
+    selected["_canonical_run"] = run
+    return selected
 
 
 def find_canonical(
@@ -91,8 +138,6 @@ def find_canonical(
             if not run_is_canonical(run, branch, workflow_path):
                 continue
             run_id = int(run.get("id") or 0)
-            if not run_id:
-                continue
             try:
                 artifacts_payload = request_json(
                     f"{base}/actions/runs/{run_id}/artifacts"
@@ -101,7 +146,7 @@ def find_canonical(
                 )
             except urllib.error.HTTPError:
                 continue
-            artifact = newest_named_artifact(artifacts_payload, artifact_name)
+            artifact = newest_named_artifact(artifacts_payload, artifact_name, run)
             if artifact is not None:
                 return artifact
         if len(runs) < 100:
@@ -139,7 +184,7 @@ def main() -> int:
             "branch": args.branch,
             "workflow_path": args.workflow_path,
             "allowed_events": [CANONICAL_EVENT],
-            "selection": "successful_scheduled_workflow_runs_then_named_artifact",
+            "selection": "successful_scheduled_workflow_runs_then_bound_named_artifact",
         }
         _write_report(args.report, report)
         print(json.dumps(report, sort_keys=True))
@@ -147,17 +192,23 @@ def main() -> int:
             raise SystemExit("no completed successful scheduled prospective artifact found")
         return 0
 
+    run = artifact.pop("_canonical_run")
     identity = download(artifact["archive_download_url"], args.token, args.out)
     report = {
         "status": "downloaded",
-        "schema_version": 6,
+        "schema_version": 7,
         "artifact_id": artifact["id"],
-        "workflow_run_id": (artifact.get("workflow_run") or {}).get("id"),
-        "created_at": artifact.get("created_at"),
+        "artifact_created_at": artifact.get("created_at"),
+        "workflow_run_id": run["id"],
+        "workflow_run_event": run["event"],
+        "workflow_run_head_sha": run["head_sha"],
+        "workflow_run_created_at": run.get("created_at"),
+        "workflow_run_updated_at": run.get("updated_at"),
         "branch": args.branch,
         "workflow_path": args.workflow_path,
         "allowed_events": [CANONICAL_EVENT],
-        "selection": "successful_scheduled_workflow_runs_then_named_artifact",
+        "selection": "successful_scheduled_workflow_runs_then_bound_named_artifact",
+        "artifact_run_binding": "exact_run_id_and_bounded_timestamps_v1",
         "out": args.out,
         **identity,
     }
