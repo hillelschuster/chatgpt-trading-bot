@@ -9,6 +9,10 @@ import json
 import zipfile
 from pathlib import Path, PurePosixPath
 
+# Only durable prospective series state belongs here. Reports produced while
+# downloading or restoring the current artifact are transport metadata, not
+# members of the prior evidence generation, and must never be compared against
+# their recursively archived predecessor.
 MANAGED_MEMBERS = {
     "data/crossvenue_experiment_freeze.json",
     "data/crossvenue_snapshots.jsonl",
@@ -17,7 +21,6 @@ MANAGED_MEMBERS = {
     "data/crossvenue_pnl_events.jsonl",
     "data/crossvenue_validation_base_ledger.jsonl",
     "data/crossvenue_validation_stress_ledger.jsonl",
-    "reports/crossvenue_restore_bundle.json",
     "reports/crossvenue_freeze.json",
     "reports/crossvenue_continuity.json",
     "reports/crossvenue_events.json",
@@ -27,6 +30,13 @@ MANAGED_MEMBERS = {
     "reports/crossvenue_validation.json",
     "reports/crossvenue_promotion.json",
     "reports/crossvenue_chain.json",
+}
+
+TRANSPORT_METADATA = {
+    "reports/crossvenue_restoration.json",
+    "reports/crossvenue_artifact_binding.json",
+    "reports/crossvenue_restore_bundle.json",
+    "reports/crossvenue_restored_inventory.json",
 }
 
 
@@ -73,11 +83,12 @@ def verify_restored_inventory(archive: Path, destination: Path) -> dict:
     blockers.extend(f"restored_member_digest_mismatch:{name}" for name in mismatched)
     return {
         "status": "VALID" if not blockers else "INVALID",
-        "schema_version": 1,
+        "schema_version": 2,
         "archive_sha256": hashlib.sha256(raw).hexdigest(),
         "managed_member_count": len(MANAGED_MEMBERS),
         "archive_managed_members": sorted(MANAGED_MEMBERS & archive_members),
         "present_managed_members": present,
+        "excluded_transport_metadata": sorted(TRANSPORT_METADATA & archive_members),
         "stale_managed_members": stale,
         "missing_restored_members": missing,
         "digest_mismatches": mismatched,
@@ -94,7 +105,7 @@ def main() -> int:
     try:
         report = verify_restored_inventory(args.archive, args.destination)
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
-        report = {"status": "INVALID", "schema_version": 1, "blockers": [f"inventory_input_error:{exc}"]}
+        report = {"status": "INVALID", "schema_version": 2, "blockers": [f"inventory_input_error:{exc}"]}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2, sort_keys=True))
