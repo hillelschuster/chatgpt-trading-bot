@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Restore only a completed successful prospective artifact from the approved workflow."""
-import argparse
+"""Small helpers for selecting and downloading GitHub Actions evidence artifacts."""
 import hashlib
 import json
 import os
@@ -11,24 +10,18 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-ALLOWED_EVENTS = {"schedule", "workflow_dispatch"}
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
 MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
-MAX_ZIP_MEMBERS = 10_000
+MAX_ZIP_MEMBERS = 1_000
 MAX_ZIP_COMPRESSION_RATIO = 200.0
-ZIP_SAFETY_POLICY = "bounded_unencrypted_members_before_crc_v1"
 SENSITIVE_REDIRECT_HEADERS = {"authorization", "x-github-api-version"}
 
 
 class SafeArtifactRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Follow HTTPS redirects without forwarding GitHub credentials cross-origin."""
-
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         target = urllib.parse.urlsplit(newurl)
         if target.scheme.lower() != "https" or not target.hostname:
-            raise urllib.error.HTTPError(
-                newurl, code, "unsafe_artifact_redirect", headers, fp
-            )
+            raise urllib.error.HTTPError(newurl, code, "unsafe_artifact_redirect", headers, fp)
         redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
         if redirected is None:
             return None
@@ -42,33 +35,6 @@ class SafeArtifactRedirectHandler(urllib.request.HTTPRedirectHandler):
         return redirected
 
 
-def run_is_approved(run, branch=None, workflow_path=None):
-    """Require a successful approved event and, when configured, exact provenance."""
-    if not (run.get("status") == "completed" and run.get("conclusion") == "success"
-            and run.get("event") in ALLOWED_EVENTS):
-        return False
-    if branch and run.get("head_branch") != branch:
-        return False
-    if workflow_path and run.get("path") != workflow_path:
-        return False
-    return True
-
-
-def choose_artifact(artifacts, runs, branch=None, workflow_path=None):
-    """Return newest non-expired artifact produced by an approved workflow run."""
-    ordered = sorted(
-        (a for a in artifacts if not a.get("expired")),
-        key=lambda a: (a.get("created_at") or "", int(a.get("id") or 0)),
-        reverse=True,
-    )
-    for artifact in ordered:
-        run_id = int((artifact.get("workflow_run") or {}).get("id") or 0)
-        run = runs.get(run_id) or {}
-        if run_is_approved(run, branch, workflow_path):
-            return artifact
-    return None
-
-
 def request_json(url, token):
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
@@ -80,13 +46,9 @@ def request_json(url, token):
         return json.load(response)
 
 
-def inspect_zip(
-    path,
-    max_uncompressed_bytes=MAX_ZIP_UNCOMPRESSED_BYTES,
-    max_members=MAX_ZIP_MEMBERS,
-    max_compression_ratio=MAX_ZIP_COMPRESSION_RATIO,
-):
-    """Reject expansion hazards before reading members, then verify every CRC."""
+def inspect_zip(path, max_uncompressed_bytes=MAX_ZIP_UNCOMPRESSED_BYTES,
+                max_members=MAX_ZIP_MEMBERS,
+                max_compression_ratio=MAX_ZIP_COMPRESSION_RATIO):
     try:
         with zipfile.ZipFile(path) as archive:
             members = archive.infolist()
@@ -94,36 +56,30 @@ def inspect_zip(
                 raise ValueError("artifact_zip_has_no_members")
             if len(members) > max_members:
                 raise ValueError("artifact_zip_too_many_members")
-
-            total_uncompressed = 0
+            total = 0
             for member in members:
                 if member.flag_bits & 0x1:
                     raise ValueError(f"artifact_zip_encrypted_member:{member.filename}")
-                total_uncompressed += member.file_size
-                if total_uncompressed > max_uncompressed_bytes:
+                total += member.file_size
+                if total > max_uncompressed_bytes:
                     raise ValueError("artifact_zip_uncompressed_too_large")
                 if member.file_size:
-                    if member.compress_size <= 0:
-                        raise ValueError(f"artifact_zip_extreme_compression:{member.filename}")
-                    ratio = member.file_size / member.compress_size
+                    ratio = member.file_size / max(member.compress_size, 1)
                     if ratio > max_compression_ratio:
                         raise ValueError(f"artifact_zip_extreme_compression:{member.filename}")
-
             corrupt = archive.testzip()
             if corrupt is not None:
                 raise ValueError(f"artifact_zip_crc_failure:{corrupt}")
             return {
                 "zip_member_count": len(members),
-                "zip_uncompressed_bytes": total_uncompressed,
+                "zip_uncompressed_bytes": total,
                 "zip_crc_verified": True,
-                "zip_safety_policy": ZIP_SAFETY_POLICY,
             }
     except zipfile.BadZipFile as exc:
         raise ValueError("artifact_not_valid_zip") from exc
 
 
 def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES, opener=None):
-    """Atomically persist a bounded, structurally safe artifact and return its identity."""
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
@@ -157,45 +113,10 @@ def download(url, token, path, max_bytes=MAX_ARCHIVE_BYTES, opener=None):
             raise ValueError("empty_artifact_download")
         zip_identity = inspect_zip(temporary)
         os.replace(temporary, destination)
-        directory_descriptor = os.open(destination.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
-    return {
-        "archive_sha256": digest.hexdigest(),
-        "archive_bytes": size,
-        "redirect_policy": "https_cross_origin_credentials_stripped",
-        **zip_identity,
-    }
-
-
-def find(repository, artifact_name, token, max_pages=10, branch=None, workflow_path=None):
-    base = f"https://api.github.com/repos/{repository}"
-    for page in range(1, max_pages + 1):
-        payload = request_json(
-            f"{base}/actions/artifacts?name={artifact_name}&per_page=100&page={page}", token)
-        artifacts = sorted(
-            (a for a in payload.get("artifacts") or [] if not a.get("expired")),
-            key=lambda a: (a.get("created_at") or "", int(a.get("id") or 0)),
-            reverse=True,
-        )
-        for artifact in artifacts:
-            run_id = int((artifact.get("workflow_run") or {}).get("id") or 0)
-            if not run_id:
-                continue
-            try:
-                run = request_json(f"{base}/actions/runs/{run_id}", token)
-            except urllib.error.HTTPError:
-                continue
-            if choose_artifact([artifact], {run_id: run}, branch, workflow_path):
-                return artifact
-        if len(payload.get("artifacts") or []) < 100:
-            break
-    return None
+    return {"archive_sha256": digest.hexdigest(), "archive_bytes": size, **zip_identity}
 
 
 def _write_report(path, report):
@@ -204,46 +125,3 @@ def _write_report(path, report):
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repository", required=True)
-    parser.add_argument("--artifact-name", default="crossvenue-series")
-    parser.add_argument("--branch", default="main")
-    parser.add_argument("--workflow-path", default=".github/workflows/crossvenue-probe.yml")
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--report")
-    parser.add_argument("--token", default=os.environ.get("GH_TOKEN"))
-    parser.add_argument("--required", action="store_true")
-    args = parser.parse_args()
-    if not args.token:
-        raise SystemExit("GitHub token missing")
-    artifact = find(args.repository, args.artifact_name, args.token,
-                    branch=args.branch, workflow_path=args.workflow_path)
-    if not artifact:
-        report = {"status": "not_found", "artifact_name": args.artifact_name,
-                  "branch": args.branch, "workflow_path": args.workflow_path}
-        _write_report(args.report, report)
-        print(json.dumps(report))
-        if args.required:
-            raise SystemExit("no approved completed successful prospective artifact found")
-        return
-    identity = download(artifact["archive_download_url"], args.token, args.out)
-    report = {
-        "status": "downloaded",
-        "schema_version": 5,
-        "artifact_id": artifact["id"],
-        "workflow_run_id": (artifact.get("workflow_run") or {}).get("id"),
-        "created_at": artifact.get("created_at"),
-        "branch": args.branch,
-        "workflow_path": args.workflow_path,
-        "out": args.out,
-        **identity,
-    }
-    _write_report(args.report, report)
-    print(json.dumps(report, sort_keys=True))
-
-
-if __name__ == "__main__":
-    main()
