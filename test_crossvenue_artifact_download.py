@@ -87,18 +87,34 @@ class ArtifactDownloadTest(unittest.TestCase):
                 request, None, 302, "Found", {}, "http://example.com/file.zip"
             )
 
-    def test_invalid_or_oversized_download_preserves_existing_destination(self):
-        cases = [(b"12345", 4, "artifact_download_too_large"),
-                 (b"not-a-zip", 100, "artifact_not_valid_zip")]
-        for payload, limit, error in cases:
-            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
-                target = Path(directory) / "series.zip"
-                target.write_bytes(b"old")
-                opener = FakeOpener(FakeResponse(payload, len(payload)))
-                with self.assertRaisesRegex(ValueError, error):
-                    download("https://api.github.com/artifact", "token", target,
-                             max_bytes=limit, opener=opener)
-                self.assertEqual(b"old", target.read_bytes())
+    def test_streamed_oversize_preserves_existing_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "series.zip"
+            target.write_bytes(b"old")
+            opener = FakeOpener(FakeResponse(b"12345"))
+            with self.assertRaisesRegex(ValueError, "artifact_download_too_large"):
+                download("https://api.github.com/artifact", "token", target,
+                         max_bytes=4, opener=opener)
+            self.assertEqual(b"old", target.read_bytes())
+
+    def test_declared_oversize_preserves_existing_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "series.zip"
+            target.write_bytes(b"old")
+            opener = FakeOpener(FakeResponse(b"x", declared=100))
+            with self.assertRaisesRegex(ValueError, "artifact_content_length_too_large"):
+                download("https://api.github.com/artifact", "token", target,
+                         max_bytes=10, opener=opener)
+            self.assertEqual(b"old", target.read_bytes())
+
+    def test_invalid_zip_preserves_existing_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "series.zip"
+            target.write_bytes(b"old")
+            opener = FakeOpener(FakeResponse(b"not-a-zip", len(b"not-a-zip")))
+            with self.assertRaisesRegex(ValueError, "artifact_not_valid_zip"):
+                download("https://api.github.com/artifact", "token", target, opener=opener)
+            self.assertEqual(b"old", target.read_bytes())
 
 
 if __name__ == "__main__":
