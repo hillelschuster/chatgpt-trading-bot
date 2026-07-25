@@ -42,13 +42,14 @@ jobs:
           test_crossvenue_freeze.py
           test_crossvenue_validate.py
           test_crossvenue_coverage.py
-      - name: Test persistence and workflow
-        run: >-
-          python -m unittest -v
-          test_crossvenue_scheduled_artifact.py
-          test_crossvenue_artifact_download.py
-          test_crossvenue_bundle.py
-          test_crossvenue_collection_provenance.py
+      - name: Test scheduled artifact selection
+        run: python -m unittest -v test_crossvenue_scheduled_artifact.py
+      - name: Test artifact download
+        run: python -m unittest -v test_crossvenue_artifact_download.py
+      - name: Test bundle restore
+        run: python -m unittest -v test_crossvenue_bundle.py
+      - name: Test workflow provenance
+        run: python -m unittest -v test_crossvenue_collection_provenance.py
       - name: Compile active modules
         run: >-
           python -m py_compile
