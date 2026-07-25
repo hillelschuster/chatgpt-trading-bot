@@ -1,68 +1,70 @@
 # Crypto Profit Research
 
-A compact research repository for finding an executable crypto edge. **No profitable strategy or live bot is established yet.**
+A compact research repository for finding an executable crypto edge. **No profitable strategy or live bot is established.**
 
-## Current evidence
+## Repository layout
 
-Corrected 180-day fixed-universe research rejected both previous strategies:
+```text
+.
+├── README.md
+├── PROGRESS.md
+├── docs/
+│   └── CROSS_VENUE_EXPERIMENT.md
+├── src/
+│   ├── crossvenue_snapshot.py
+│   ├── crossvenue_events.py
+│   ├── crossvenue_settlements.py
+│   ├── crossvenue_pnl.py
+│   ├── crossvenue_validate.py
+│   ├── crossvenue_promote.py
+│   ├── crossvenue_coverage.py
+│   ├── crossvenue_freeze.py
+│   ├── crossvenue_chain.py
+│   ├── crossvenue_artifact.py
+│   ├── crossvenue_scheduled_artifact.py
+│   └── crossvenue_bundle.py
+├── tests/
+│   └── test_crossvenue_*.py
+└── .github/workflows/
+    ├── ci.yml
+    └── crossvenue-probe.yml
+```
+
+Root policy: no Python implementation, tests, generated market data, reports, temporary experiment drafts, or abandoned strategies belong in the repository root.
+
+## Established evidence
+
+Corrected fixed-universe research rejected both prior strategy families:
 
 - funding fade: walk-forward mean `-0.1452%`, LCB95 `-0.3107%`, finite-capital return `-17.74%`;
 - hourly cross-sectional momentum/reversal: OOS mean `-0.1315%`, LCB95 `-0.1791%`, finite-capital return `-81.99%`.
 
-Those strategies are retired. Their implementations were removed; results remain in Git history.
+They are retired and absent from the active tree. Their history remains in Git.
 
 ## Active experiment
 
-`CROSS_VENUE_EXPERIMENT.md` defines one prospective, delta-neutral BTC/ETH funding-and-basis experiment using Hyperliquid and OKX public data.
+`docs/CROSS_VENUE_EXPERIMENT.md` freezes one prospective, delta-neutral BTC/ETH funding-and-basis experiment using Hyperliquid and OKX public data.
 
-The five-minute scheduled workflow:
+The scheduled workflow restores the previous series, collects synchronized executable books and pre-entry funding fields, builds delayed-entry event windows, joins realized funding after settlement, computes two-leg P&L under frozen base and stress costs, checks evidence continuity and coverage, and applies the fixed development/holdout gate.
 
-1. restores the latest successful scheduled series;
-2. collects synchronized executable books and pre-entry funding fields;
-3. builds delayed-entry event windows;
-4. joins exact realized funding after settlement;
-5. computes two-leg P&L with frozen base and stress costs;
-6. checks append-only evidence and coverage;
-7. applies the fixed development/holdout gate.
+No profitability claim is permitted before at least 200 independent completed funding periods spanning 56 days, including 60 untouched holdout periods. A pass permits public-data shadow signals only—not orders.
 
-Profitability cannot be claimed before at least 200 independent completed funding periods spanning 56 days, including 60 untouched holdout periods. Passing permits shadow signals only—not orders.
+## Commands
 
-## Active code
-
-Market and research logic:
-
-- `crossvenue_snapshot.py` — Hyperliquid/OKX public-data collector.
-- `crossvenue_events.py` — leakage-safe signal, entry, and exit windows.
-- `crossvenue_settlements.py` — exact realized-funding joins.
-- `crossvenue_pnl.py` — two-leg costs and trade P&L.
-- `crossvenue_validate.py` — fixed prospective development/holdout validation.
-- `crossvenue_coverage.py` — missing-opportunity and duplicate detection.
-- `crossvenue_promote.py` — authoritative keep/reject/wait verdict.
-- `crossvenue_freeze.py` — immutable experiment contract and cutoff.
-- `crossvenue_chain.py` — append-only evidence check.
-
-Minimal persistence:
-
-- `crossvenue_scheduled_artifact.py` — selects the latest successful scheduled artifact.
-- `crossvenue_artifact.py` — bounded credential-safe download.
-- `crossvenue_bundle.py` — one safe staged extractor.
-
-Workflows:
-
-- `ci.yml` tests active research code only when code changes.
-- `crossvenue-probe.yml` collects evidence every five minutes; it does not rerun the full test suite.
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_*.py' -v
+python -m py_compile src/*.py tests/*.py
+```
 
 ## Profit-first rules
 
-- Spend development effort on market mechanisms, real data, cost modeling, and decisive experiments—not infrastructure decoration.
-- Do not add health, binding, provenance, transport-gate, or security layers without a reproduced failure that threatens evidence correctness.
-- Do not alter the frozen cross-venue contract while it is collecting unless a demonstrated defect makes its evidence invalid.
-- Keep at most one additional discovery hypothesis active at a time.
-- Before coding a new strategy, predeclare its mechanism, data, executable entry/exit, full costs, leakage controls, and rejection gate.
-- Prefer strategies that can reach a credible verdict quickly with public historical data or short prospective collection.
-- Reject weak ideas rather than repeatedly retuning them.
+- Market evidence, realistic execution, complete costs, uncertainty, and decisive keep/reject results are the objective.
+- Do not add infrastructure, monitoring, provenance, binding, or recovery layers without a reproduced evidence-critical failure.
+- Do not alter the frozen experiment while it is collecting unless a demonstrated correctness defect invalidates its evidence.
+- Do not create a strategy file or specification before real public-data feasibility has been successfully demonstrated.
+- Keep at most one verified additional candidate active, and remove it immediately when rejected or blocked by unusable data.
 - Do not build order execution until a strategy passes research and prospective shadow gates.
 
 ## Immediate objective
 
-Let the cross-venue experiment accumulate untouched. In parallel, research exactly one economically distinct, fast-feedback opportunity and implement it only after its data and execution assumptions are verified. The next milestone must improve edge discovery or produce market evidence—not another layer around GitHub artifacts.
+Keep the Hyperliquid–OKX experiment accumulating untouched evidence. Inspect completed artifacts for a valid keep/reject decision; otherwise perform research outside the repository until a second candidate has verified data access, measurable economics, and a compact predeclared experiment worthy of implementation.
